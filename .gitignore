@@ -1,0 +1,11 @@
+# Cache TMDB (régénérable)
+.tmdb_cache.json
+.tmdb_cache.json.tmp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets
+.env
