@@ -142,6 +142,18 @@ def directors(movie_id):
     return ", ".join(dict.fromkeys(names))
 
 
+def found_label(e):
+    """Titre TMDB retenu, avec l'année et le titre original s'il diffère."""
+    if not e.get("id"):
+        return "—"
+    label = e.get("title") or e.get("original_title", "")
+    if e.get("date"):
+        label += f" ({e['date'][:4]})"
+    if e.get("original_title") and norm(e["original_title"]) != norm(e.get("title")):
+        label += f" [{e['original_title']}]"
+    return label
+
+
 def save_cache(cache):
     """Écriture atomique : un plantage pendant l'écriture ne corrompt pas le cache."""
     tmp = CACHE_FILE + ".tmp"
@@ -178,8 +190,12 @@ def main():
                 new += 1
                 if new % 25 == 0:
                     save_cache(cache)
-                print(f"[{i}/{len(titles)}] {status:12} {raw}", file=sys.stderr)
+                source = ""
+            else:
+                source = " (cache)"
             e = cache[raw]
+            print(f"[{i}/{len(titles)}] {e['status']:12} {raw} → {found_label(e)}{source}",
+                  file=sys.stderr)
             counts[e["status"]] = counts.get(e["status"], 0) + 1
             rows.append([
                 i, raw, e.get("title", ""), e.get("original_title", ""),
