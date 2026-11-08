@@ -24,6 +24,7 @@ import http.client
 import json
 import os
 import re
+import socket
 import sys
 import time
 import unicodedata
@@ -35,6 +36,18 @@ API = "https://api.themoviedb.org/3"
 LANG = "fr-FR"
 CACHE_FILE = ".tmdb_cache.json"
 SLEEP = 0.05  # TMDB tolère ~40-50 req/s
+
+# IPv4 d'abord : sur une connexion où l'IPv6 ne passe pas, Python essaie
+# chaque adresse IPv6 jusqu'au délai d'attente avant de basculer en IPv4
+# (plusieurs minutes par requête). L'IPv6 reste utilisée en secours.
+_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_ipv4_first(*args, **kwargs):
+    return sorted(_getaddrinfo(*args, **kwargs), key=lambda a: a[0] != socket.AF_INET)
+
+
+socket.getaddrinfo = _getaddrinfo_ipv4_first
 
 KEY = os.environ.get("TMDB_API_KEY", "").strip()
 if not KEY:
