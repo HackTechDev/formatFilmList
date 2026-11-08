@@ -11,6 +11,8 @@ apparaissent avec le statut « NON TRAITÉ ». L'affichage se met à jour
 automatiquement quand le cache change (pendant un traitement en cours).
 
 Double-clic sur une ligne : ouvre la fiche TMDB du film dans le navigateur.
+Bouton « Exporter… » : enregistre les films affichés (filtre et recherche
+appliqués) en Markdown ou en CSV.
 """
 import json
 import os
@@ -23,6 +25,8 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
                              QHeaderView, QLabel, QLineEdit, QMainWindow,
                              QMessageBox, QPushButton, QTableView, QVBoxLayout,
                              QWidget)
+
+import tmdb_export
 
 CACHE_FILE = ".tmdb_cache.json"  # même nom que dans tmdb_enrich.py
 NOT_DONE = "NON TRAITÉ"
@@ -123,12 +127,16 @@ class FilmViewer(QMainWindow):
         open_btn.clicked.connect(self.choose_file)
         reload_btn = QPushButton("Recharger")
         reload_btn.clicked.connect(self.reload)
+        export_btn = QPushButton("Exporter…")
+        export_btn.setToolTip("Enregistrer les films affichés en Markdown ou en CSV")
+        export_btn.clicked.connect(self.export)
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Statut :"))
         bar.addWidget(self.status_combo)
         bar.addWidget(self.search, 1)
         bar.addWidget(reload_btn)
+        bar.addWidget(export_btn)
         bar.addWidget(open_btn)
         layout = QVBoxLayout()
         layout.addLayout(bar)
@@ -226,6 +234,43 @@ class FilmViewer(QMainWindow):
         movie_id = self.model.item(src.row(), COL_ID).text()
         if movie_id:
             QDesktopServices.openUrl(QUrl(f"https://www.themoviedb.org/movie/{movie_id}"))
+
+    def visible_rows(self):
+        """Films affichés, dans l'ordre affiché, au format de tmdb_export."""
+        rows = []
+        for r in range(self.proxy.rowCount()):
+            src = self.proxy.mapToSource(self.proxy.index(r, 0)).row()
+            film = dict(zip(COLUMNS, (self.model.item(src, c).data(Qt.ItemDataRole.DisplayRole)
+                                      for c in range(len(COLUMNS)))))
+            rows.append([film[h] if film[h] is not None else "" for h in tmdb_export.HEADER])
+        return rows
+
+    def export(self):
+        rows = self.visible_rows()
+        if not rows:
+            QMessageBox.information(self, "Exporter", "Aucun film affiché à exporter.")
+            return
+        status = self.status_combo.currentData()
+        default = tmdb_export.default_name(self.list_path, status) + ".md"
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "Exporter les films affichés", default,
+            "Markdown (*.md);;CSV (*.csv)")
+        if not path:
+            return
+        if not os.path.splitext(path)[1]:
+            path += ".csv" if chosen.startswith("CSV") else ".md"
+        title = "Liste de films" + (f" — {status}" if status else "")
+        if self.search.text().strip():
+            title += f" — recherche « {self.search.text().strip()} »"
+        try:
+            if path.lower().endswith(".csv"):
+                tmdb_export.write_csv(path, rows)
+            else:
+                tmdb_export.write_md(path, rows, title)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur", f"Impossible d'écrire {path} :\n{e}")
+            return
+        self.statusBar().showMessage(f"{len(rows)} film(s) exporté(s) dans {path}", 8000)
 
     def choose_file(self):
         path, _ = QFileDialog.getOpenFileName(

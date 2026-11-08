@@ -47,7 +47,11 @@ Le script crée deux fichiers à côté de la liste, en gardant l'ordre d'origin
 - `liste_film_tmdb.md` : un tableau Markdown, avec un lien vers chaque fiche
   TMDB et une section **Doublons probables** ;
 - `liste_film_tmdb.csv` : le même contenu en CSV (séparateur `;`), lisible
-  directement dans Excel avec les accents.
+  directement dans Excel avec les accents ;
+- un tableau par statut, en Markdown et en CSV :
+  `liste_film_tmdb_OK`, `liste_film_tmdb_A_VERIFIER` et
+  `liste_film_tmdb_INTROUVABLE` (`.md` et `.csv`). Ils sont réécrits à chaque
+  exécution, même vides, pour ne jamais garder une ancienne liste.
 
 Chaque film reçoit un statut :
 
@@ -79,7 +83,9 @@ python3 film_viewer.py test_films.md  # une autre liste
   avec le nombre de films pour chacun ;
 - **recherche** dans les titres et les réalisateurs ;
 - **tri** en cliquant sur l'en-tête d'une colonne ;
-- **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur.
+- **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur ;
+- **Exporter…** : enregistre les films affichés (statut et recherche
+  appliqués, dans l'ordre du tri) en Markdown ou en CSV.
 
 L'interface lit la liste et le cache : elle fonctionne même avant la fin du
 traitement, et se met à jour toute seule pendant que `tmdb_enrich.py` tourne.

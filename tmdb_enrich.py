@@ -10,6 +10,8 @@ Usage :
 Sorties :
     liste_film_tmdb.md   tableau Markdown (ordre d'origine conservé)
     liste_film_tmdb.csv  même contenu en CSV (séparateur ;)
+    liste_film_tmdb_OK.md / _A_VERIFIER.md / _INTROUVABLE.md (+ .csv)
+                         un tableau par statut
     .tmdb_cache.json     cache : relancer le script reprend là où il s'était arrêté
 
 Colonne "Statut" :
@@ -19,7 +21,6 @@ Colonne "Statut" :
 
 Aucune dépendance externe (stdlib uniquement).
 """
-import csv
 import http.client
 import json
 import os
@@ -31,6 +32,8 @@ import unicodedata
 import urllib.parse
 import urllib.request
 import urllib.error
+
+import tmdb_export
 
 API = "https://api.themoviedb.org/3"
 LANG = "fr-FR"
@@ -217,43 +220,11 @@ def main():
     finally:  # sauvegarde même en cas de plantage ou de Ctrl+C
         save_cache(cache)
 
-    occurrences = {}
-    for r in rows:
-        occurrences.setdefault(r[6] or r[1], []).append(r[0])
-
-    base = os.path.splitext(src)[0] + "_tmdb"
-    header = ["#", "Titre (liste)", "Titre TMDB", "Titre original",
-              "Date de sortie", "Réalisateur", "ID TMDB", "Statut"]
-
-    # utf-8-sig : le BOM permet à Excel d'afficher correctement les accents
-    with open(base + ".csv", "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f, delimiter=";")
-        w.writerow(header + ["Lien"])
-        for r in rows:
-            w.writerow(r + [f"https://www.themoviedb.org/movie/{r[6]}" if r[6] else ""])
-
-    def md(s):
-        return str(s).replace("|", "\\|")
-
-    with open(base + ".md", "w", encoding="utf-8") as f:
-        f.write("# Liste de films (données TMDB)\n\n")
-        f.write(" · ".join(f"{k} : {v}" for k, v in sorted(counts.items())) + "\n\n")
-        f.write("| " + " | ".join(header) + " |\n")
-        f.write("|" + "---|" * len(header) + "\n")
-        for r in rows:
-            r = list(r)
-            if r[6]:
-                r[6] = f"[{r[6]}](https://www.themoviedb.org/movie/{r[6]})"
-            f.write("| " + " | ".join(md(c) for c in r) + " |\n")
-        dups = {k: v for k, v in occurrences.items() if len(v) > 1}
-        if dups:
-            f.write("\n## Doublons probables\n\n")
-            for k, v in dups.items():
-                titles_ = rows[v[0] - 1][2] or rows[v[0] - 1][1]
-                ref = f"ID {k}" if rows[v[0] - 1][6] else "non trouvé sur TMDB"
-                f.write(f"- {titles_} ({ref}) : lignes {', '.join(map(str, v))}\n")
-
-    print(f"\nTerminé : {base}.md et {base}.csv — {counts}", file=sys.stderr)
+    base = tmdb_export.default_name(src)
+    written = tmdb_export.write_all(base, rows)
+    print(f"\nTerminé — {counts}", file=sys.stderr)
+    for path in written:
+        print(f"  {path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
