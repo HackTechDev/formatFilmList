@@ -13,6 +13,10 @@ automatiquement quand le cache change (pendant un traitement en cours).
 Double-clic sur une ligne : ouvre la fiche TMDB du film dans le navigateur.
 Bouton « Exporter… » : enregistre les films affichés (filtre et recherche
 appliqués) en Markdown ou en CSV.
+
+Colonne « Validé » : cocher un film « À VÉRIFIER » valide le titre TMDB
+proposé ; il passe en « OK ». Les validations sont enregistrées dans
+validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
 """
 import json
 import os
@@ -37,16 +41,25 @@ STATUS_COLORS = {
     "INTROUVABLE": QColor("#d43c3c"),
     NOT_DONE: QColor("#888888"),
 }
-COLUMNS = ["#", "Statut", "Titre (liste)", "Titre TMDB", "Titre original",
+COLUMNS = ["#", "Statut", "Validé", "Titre (liste)", "Titre TMDB", "Titre original",
            "Date de sortie", "Réalisateur", "ID TMDB"]
 COL_STATUS = COLUMNS.index("Statut")
+COL_CHECK = COLUMNS.index("Validé")
+COL_RAW = COLUMNS.index("Titre (liste)")
 COL_ID = COLUMNS.index("ID TMDB")
 COL_TITLES = [COLUMNS.index(c) for c in ("Titre (liste)", "Titre TMDB", "Titre original")]
 COL_SEARCH = COL_TITLES + [COLUMNS.index("Réalisateur")]
+# Statut utilisé par le filtre : figé jusqu'au prochain changement de filtre,
+# pour qu'une ligne cochée ne disparaisse pas sous le curseur.
+FILTER_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def load_films(list_path):
-    """Retourne une ligne par titre de la liste, complétée par le cache TMDB."""
+    """Une ligne par titre de la liste, complétée par le cache TMDB.
+
+    Chaque ligne suit COLUMNS ; la colonne « Validé » vaut None si le film
+    ne peut pas être validé (statut autre que « À VÉRIFIER »), sinon True/False.
+    """
     with open(list_path, encoding="utf-8") as f:
         titles = [l.strip() for l in f if l.strip()]
     cache = {}
@@ -57,13 +70,17 @@ def load_films(list_path):
                 cache = json.load(f)
         except (OSError, json.JSONDecodeError):
             pass  # cache illisible : tout apparaît comme non traité
+    validations = tmdb_export.load_validations(list_path)
     films = []
     for i, raw in enumerate(titles, 1):
         e = cache.get(raw, {})
-        films.append([i, e.get("status", NOT_DONE), raw, e.get("title", ""),
+        checkable = e.get("status") == "À VÉRIFIER" and bool(e.get("id"))
+        validated = tmdb_export.is_validated(raw, e, validations) if checkable else None
+        status = tmdb_export.effective_status(raw, e, validations) if e else NOT_DONE
+        films.append([i, status, validated, raw, e.get("title", ""),
                       e.get("original_title", ""), e.get("date", ""),
                       e.get("director", ""), e.get("id", "")])
-    return films, cache_path
+    return films, cache_path, validations
 
 
 class FilmFilter(QSortFilterProxyModel):
@@ -84,7 +101,7 @@ class FilmFilter(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, row, parent):
         m = self.sourceModel()
-        if self.status and m.item(row, COL_STATUS).text() != self.status:
+        if self.status and m.item(row, COL_STATUS).data(FILTER_ROLE) != self.status:
             return False
         if self.text:
             fields = (m.item(row, c).text() for c in COL_SEARCH)
@@ -117,8 +134,7 @@ class FilmViewer(QMainWindow):
         self.table.doubleClicked.connect(self.open_tmdb)
 
         self.status_combo = QComboBox()
-        self.status_combo.currentIndexChanged.connect(
-            lambda: self.proxy.set_status(self.status_combo.currentData()))
+        self.status_combo.currentIndexChanged.connect(self.on_status_filter)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Rechercher un titre ou un réalisateur…")
         self.search.setClearButtonEnabled(True)
@@ -145,6 +161,11 @@ class FilmViewer(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
 
+        self.loading = False
+        self.validations = {}
+        self.stamp = None
+        self.model.itemChanged.connect(self.on_item_changed)
+
         self.proxy.rowsInserted.connect(self.update_count)
         self.proxy.rowsRemoved.connect(self.update_count)
         self.proxy.modelReset.connect(self.update_count)
@@ -164,8 +185,17 @@ class FilmViewer(QMainWindow):
         for col in COL_TITLES:  # titres : largeur raisonnable
             self.table.setColumnWidth(col, min(self.table.columnWidth(col), 300))
 
+    def files_stamp(self):
+        """Dates de modification de la liste et du cache."""
+        cache = os.path.join(os.path.dirname(os.path.abspath(self.list_path)), CACHE_FILE)
+        return tuple(os.path.getmtime(p) if os.path.exists(p) else None
+                     for p in (self.list_path, cache))
+
     def schedule_reload(self, *_):
-        self.reload_timer.start()
+        # Le dossier est surveillé : ignorer les écritures qui ne touchent ni
+        # la liste ni le cache (validations.json, exports…).
+        if self.files_stamp() != self.stamp:
+            self.reload_timer.start()
 
     def watch(self, cache_path):
         old = self.watcher.files() + self.watcher.directories()
@@ -178,51 +208,104 @@ class FilmViewer(QMainWindow):
 
     def reload(self):
         try:
-            films, cache_path = load_films(self.list_path)
+            films, cache_path, self.validations = load_films(self.list_path)
         except OSError as e:
             QMessageBox.critical(self, "Erreur", f"Impossible de lire {self.list_path} :\n{e}")
             return
         self.watch(cache_path)
         self.setWindowTitle(f"Films TMDB — {os.path.basename(self.list_path)}")
 
+        self.stamp = self.files_stamp()
+        scroll = self.table.verticalScrollBar().value()
+
+        self.loading = True
         self.model.removeRows(0, self.model.rowCount())
         for film in films:
             row = []
             for col, value in enumerate(film):
                 item = QStandardItem()
-                if col == 0 or (col == COL_ID and value != ""):
+                if col == COL_CHECK:
+                    item.setEditable(False)
+                    item.setCheckable(value is not None)
+                    if value is not None:
+                        item.setCheckState(Qt.CheckState.Checked if value
+                                           else Qt.CheckState.Unchecked)
+                        item.setToolTip("Cocher pour valider le titre TMDB proposé")
+                elif col == 0 or (col == COL_ID and value != ""):
                     item.setData(int(value), Qt.ItemDataRole.DisplayRole)  # tri numérique
                 else:
                     item.setText(str(value))
                 row.append(item)
-            status = film[COL_STATUS]
-            row[COL_STATUS].setForeground(STATUS_COLORS.get(status, QColor("#888888")))
-            font = row[COL_STATUS].font()
-            font.setBold(True)
-            row[COL_STATUS].setFont(font)
+            self.set_status(row[COL_STATUS], film[COL_STATUS], film[COL_CHECK])
+            row[COL_STATUS].setData(film[COL_STATUS], FILTER_ROLE)
             if film[COL_ID]:
                 row[COL_ID].setToolTip("Double-clic : ouvrir la fiche TMDB")
             self.model.appendRow(row)
+        self.loading = False
 
-        self.films = films
         self.fill_status_combo()
         self.update_count()
+        self.table.verticalScrollBar().setValue(scroll)
 
-    def fill_status_combo(self):
+    @staticmethod
+    def set_status(item, status, validated=None):
+        item.setText(status)
+        item.setForeground(STATUS_COLORS.get(status, QColor("#888888")))
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setToolTip("Validé manuellement" if validated else "")
+
+    def on_item_changed(self, item):
+        """Coche « Validé » : enregistre la validation et met à jour le statut."""
+        if self.loading or item.column() != COL_CHECK or not item.isCheckable():
+            return
+        row = item.row()
+        raw = self.model.item(row, COL_RAW).text()
+        movie_id = self.model.item(row, COL_ID).data(Qt.ItemDataRole.DisplayRole)
+        validated = item.checkState() == Qt.CheckState.Checked
+        if validated:
+            self.validations[raw] = movie_id
+        else:
+            self.validations.pop(raw, None)
+        try:
+            tmdb_export.save_validations(self.list_path, self.validations)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur",
+                                 f"Impossible d'enregistrer les validations :\n{e}")
+            return
+        status = "OK" if validated else "À VÉRIFIER"
+        self.set_status(self.model.item(row, COL_STATUS), status, validated)
+        self.fill_status_combo(refilter=False)
+        title = self.model.item(row, COL_TITLES[1]).text()
+        self.statusBar().showMessage(
+            f"« {raw} » → {title} : " + ("validé (OK)" if validated else "à vérifier"), 6000)
+
+    def on_status_filter(self):
+        # Changement de filtre : on prend en compte les dernières validations.
+        for r in range(self.model.rowCount()):
+            item = self.model.item(r, COL_STATUS)
+            item.setData(item.text(), FILTER_ROLE)
+        self.proxy.set_status(self.status_combo.currentData())
+
+    def fill_status_combo(self, refilter=True):
         counts = {}
-        for f in self.films:
-            counts[f[COL_STATUS]] = counts.get(f[COL_STATUS], 0) + 1
+        for r in range(self.model.rowCount()):
+            s = self.model.item(r, COL_STATUS).text()
+            counts[s] = counts.get(s, 0) + 1
         current = self.status_combo.currentData()
         self.status_combo.blockSignals(True)
         self.status_combo.clear()
-        self.status_combo.addItem(f"Tous ({len(self.films)})", None)
+        self.status_combo.addItem(f"Tous ({self.model.rowCount()})", None)
         for s in STATUSES:
-            if counts.get(s):
-                self.status_combo.addItem(f"{s} ({counts[s]})", s)
+            # le filtre courant reste proposé même s'il n'a plus de film
+            if counts.get(s) or s == current:
+                self.status_combo.addItem(f"{s} ({counts.get(s, 0)})", s)
         idx = self.status_combo.findData(current)
         self.status_combo.setCurrentIndex(max(idx, 0))
         self.status_combo.blockSignals(False)
-        self.proxy.set_status(self.status_combo.currentData())
+        if refilter:
+            self.proxy.set_status(self.status_combo.currentData())
 
     def update_count(self, *_):
         self.statusBar().showMessage(

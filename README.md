@@ -85,7 +85,18 @@ python3 film_viewer.py test_films.md  # une autre liste
 - **tri** en cliquant sur l'en-tête d'une colonne ;
 - **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur ;
 - **Exporter…** : enregistre les films affichés (statut et recherche
-  appliqués, dans l'ordre du tri) en Markdown ou en CSV.
+  appliqués, dans l'ordre du tri) en Markdown ou en CSV ;
+- **colonne « Validé »** : pour un film `À VÉRIFIER`, cocher la case valide
+  le titre TMDB proposé et le film passe en `OK`. La ligne reste affichée
+  jusqu'au prochain changement de filtre, ce qui permet de décocher en cas
+  d'erreur.
+
+Les validations sont enregistrées dans `validations.json`, à côté de la liste
+(titre de la liste → ID TMDB validé). `tmdb_enrich.py` les reprend : les films
+validés apparaissent en `OK` dans tous les fichiers produits. Ce fichier est
+indépendant du cache, donc supprimer `.tmdb_cache.json` ne fait pas perdre les
+validations ; mais si une nouvelle recherche propose un autre film (autre ID),
+la validation ne s'applique plus et le film redevient `À VÉRIFIER`.
 
 L'interface lit la liste et le cache : elle fonctionne même avant la fin du
 traitement, et se met à jour toute seule pendant que `tmdb_enrich.py` tourne.

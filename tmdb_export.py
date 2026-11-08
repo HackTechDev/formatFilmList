@@ -6,6 +6,7 @@ Une ligne de film est une liste :
     [#, titre (liste), titre TMDB, titre original, date, réalisateur, ID TMDB, statut]
 """
 import csv
+import json
 import os
 import unicodedata
 
@@ -14,6 +15,45 @@ HEADER = ["#", "Titre (liste)", "Titre TMDB", "Titre original",
 I_NUM, I_RAW, I_TITLE, I_ID, I_STATUS = 0, 1, 2, 6, 7
 STATUSES = ["OK", "À VÉRIFIER", "INTROUVABLE"]
 TMDB_URL = "https://www.themoviedb.org/movie/{}"
+
+# Films « À VÉRIFIER » validés à la main dans film_viewer.py :
+# {titre de la liste: ID TMDB validé}. Fichier à côté de la liste.
+VALIDATIONS_FILE = "validations.json"
+
+
+def validations_path(list_path):
+    return os.path.join(os.path.dirname(os.path.abspath(list_path)), VALIDATIONS_FILE)
+
+
+def load_validations(list_path):
+    path = validations_path(list_path)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_validations(list_path, validations):
+    path = validations_path(list_path)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(dict(sorted(validations.items())), f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def is_validated(raw, entry, validations):
+    """Vrai si ce film « À VÉRIFIER » a été validé avec le même ID TMDB."""
+    return (entry.get("status") == "À VÉRIFIER" and bool(entry.get("id"))
+            and validations.get(raw) == entry.get("id"))
+
+
+def effective_status(raw, entry, validations):
+    """Statut à afficher : un film validé à la main passe en « OK »."""
+    return "OK" if is_validated(raw, entry, validations) else entry.get("status")
 
 
 def status_slug(status):

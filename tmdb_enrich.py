@@ -15,7 +15,8 @@ Sorties :
     .tmdb_cache.json     cache : relancer le script reprend là où il s'était arrêté
 
 Colonne "Statut" :
-    OK         titre TMDB identique (titre FR ou original) au titre de la liste
+    OK         titre TMDB identique (titre FR ou original) au titre de la liste,
+               ou titre « À VÉRIFIER » validé dans film_viewer.py (validations.json)
     À VÉRIFIER correspondance approximative (premier résultat TMDB retenu)
     INTROUVABLE aucun résultat
 
@@ -187,6 +188,7 @@ def main():
         with open(CACHE_FILE, encoding="utf-8") as f:
             cache = json.load(f)
 
+    validations = tmdb_export.load_validations(src)  # validés dans film_viewer.py
     rows, counts = [], {}
     new = 0
     try:
@@ -210,12 +212,15 @@ def main():
             else:
                 source = " (cache)"
             e = cache[raw]
-            print(f"[{i}/{len(titles)}] {e['status']:12} {raw} → {found_label(e)}{source}",
+            status = tmdb_export.effective_status(raw, e, validations)
+            if tmdb_export.is_validated(raw, e, validations):
+                source += " (validé)"
+            print(f"[{i}/{len(titles)}] {status:12} {raw} → {found_label(e)}{source}",
                   file=sys.stderr)
-            counts[e["status"]] = counts.get(e["status"], 0) + 1
+            counts[status] = counts.get(status, 0) + 1
             rows.append([
                 i, raw, e.get("title", ""), e.get("original_title", ""),
-                e.get("date", ""), e.get("director", ""), e.get("id", ""), e["status"],
+                e.get("date", ""), e.get("director", ""), e.get("id", ""), status,
             ])
     finally:  # sauvegarde même en cas de plantage ou de Ctrl+C
         save_cache(cache)
