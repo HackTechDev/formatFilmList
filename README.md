@@ -66,6 +66,24 @@ Pendant l'exécution, chaque ligne affiche le film retenu :
 
 Pense à relire à la main les lignes `À VÉRIFIER` et `INTROUVABLE`.
 
+## Interface graphique
+
+`film_viewer.py` affiche les films traités dans une fenêtre (nécessite PyQt6) :
+
+```bash
+python3 film_viewer.py                # liste_film.md
+python3 film_viewer.py test_films.md  # une autre liste
+```
+
+- **Filtre par statut** (`OK`, `À VÉRIFIER`, `INTROUVABLE`, `NON TRAITÉ`),
+  avec le nombre de films pour chacun ;
+- **recherche** dans les titres et les réalisateurs ;
+- **tri** en cliquant sur l'en-tête d'une colonne ;
+- **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur.
+
+L'interface lit la liste et le cache : elle fonctionne même avant la fin du
+traitement, et se met à jour toute seule pendant que `tmdb_enrich.py` tourne.
+
 ## Cache et reprise
 
 Les résultats sont enregistrés au fur et à mesure dans `.tmdb_cache.json`
