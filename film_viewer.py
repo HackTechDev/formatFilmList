@@ -62,6 +62,7 @@ STATUS_COLORS = {
     "RECHERCHE…": QColor("#2f6fd6"),
 }
 SEARCHING = "RECHERCHE…"
+SYNC_ROW_COLOR = QColor("#cfe2ff")  # fond bleu de la ligne en cours de synchronisation
 COLUMNS = ["#", "Statut", "Validé", "Titre (liste)", "Titre TMDB", "Titre original",
            "Date de sortie", "Réalisateur", "Pays", "ID TMDB"]
 COL_STATUS = COLUMNS.index("Statut")
@@ -301,6 +302,7 @@ class FilmViewer(QMainWindow):
         self.lookups = {}  # titre -> LookupThread en cours
         self.sync = None          # SyncThread en cours
         self.sync_current = None  # titre en cours de synchronisation
+        self.sync_highlight = None  # titre dont la ligne est surlignée en bleu
         self.pending = {}         # résultats pas encore écrits dans le cache
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(250)
@@ -394,6 +396,8 @@ class FilmViewer(QMainWindow):
         self.fill_status_combo()
         self.update_count()
         self.table.verticalScrollBar().setValue(scroll)
+        if getattr(self, "sync_highlight", None):  # rechargé pendant une synchronisation
+            self.highlight_rows(self.sync_highlight, True)
 
     def fill_row(self, r, film):
         """Remplit la ligne r du modèle avec les valeurs de film (voir film_row)."""
@@ -753,6 +757,30 @@ class FilmViewer(QMainWindow):
                                 + (f" — {raw}" if raw else "") + " (Échap pour arrêter)")
         if raw:
             self.set_searching(raw, True)
+        self.follow_sync(raw)
+
+    def highlight_rows(self, raw, on):
+        """Fond bleu (ou normal) sur toutes les cellules des lignes de ce titre."""
+        self.loading = True
+        for r in self.rows_of(raw):
+            for c in range(len(COLUMNS)):
+                self.model.item(r, c).setData(SYNC_ROW_COLOR if on else None,
+                                              Qt.ItemDataRole.BackgroundRole)
+        self.loading = False
+
+    def follow_sync(self, raw):
+        """Surligne le film en cours et le garde au milieu du tableau."""
+        if self.sync_highlight and self.sync_highlight != raw:
+            self.highlight_rows(self.sync_highlight, False)
+        self.sync_highlight = raw or None
+        if not raw:
+            return
+        self.highlight_rows(raw, True)
+        rows = self.rows_of(raw)
+        if rows:
+            index = self.proxy.mapFromSource(self.model.index(rows[0], 0))
+            if index.isValid():  # invisible si le filtre ou la recherche l'écarte
+                self.table.scrollTo(index, QTableView.ScrollHint.PositionAtCenter)
 
     def on_sync_found(self, raw, entry):
         self.pending[raw] = entry
@@ -790,6 +818,7 @@ class FilmViewer(QMainWindow):
         if self.sync_current:
             self.set_searching(self.sync_current, False)
         self.sync_current = None
+        self.follow_sync(None)
         self.flush_pending()
         self.progress.hide()
         self.sync_label.clear()
