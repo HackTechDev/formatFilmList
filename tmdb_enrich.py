@@ -174,7 +174,21 @@ def query_variants(raw):
     return uniq
 
 
+def candidate(r):
+    """Résumé d'un résultat de recherche TMDB, gardé dans le cache."""
+    return {"id": r["id"], "title": r.get("title", ""),
+            "original_title": r.get("original_title", ""),
+            "date": r.get("release_date", ""),
+            "overview": (r.get("overview") or "")[:400]}
+
+
 def search(raw):
+    """(film retenu, statut, homonymes).
+
+    homonymes : liste de candidate() quand plusieurs films portent exactement
+    ce titre (ex. un film et son remake) ; le film retenu est alors le premier
+    et le statut « À VÉRIFIER », pour que l'utilisateur choisisse.
+    """
     best = None
     for q, year in query_variants(raw):
         params = {"query": q, "language": LANG, "include_adult": "true"}
@@ -184,12 +198,15 @@ def search(raw):
         if not res:
             continue
         nq = norm(q)
-        for r in res[:10]:
-            if nq in (norm(r.get("title")), norm(r.get("original_title"))):
-                return r, "OK"
+        exact = [r for r in res[:10]
+                 if nq in (norm(r.get("title")), norm(r.get("original_title")))]
+        if len(exact) > 1:
+            return exact[0], "À VÉRIFIER", [candidate(r) for r in exact]
+        if exact:
+            return exact[0], "OK", []
         if best is None:
             best = res[0]
-    return (best, "À VÉRIFIER") if best else (None, "INTROUVABLE")
+    return (best, "À VÉRIFIER", []) if best else (None, "INTROUVABLE", [])
 
 
 _COUNTRY_NAMES = None
@@ -231,21 +248,38 @@ def complete(entry):
     return True
 
 
+def movie_entry(c):
+    """Champs de cache d'un film (c au format candidate()), avec réalisateur et pays."""
+    director, country = details(c["id"])
+    return {"id": c["id"], "title": c.get("title", ""),
+            "original_title": c.get("original_title", ""), "date": c.get("date", ""),
+            "director": director, "country": country}
+
+
 def lookup(raw):
-    """Cherche un titre sur TMDB et retourne son entrée de cache."""
-    movie, status = search(raw)
+    """Cherche un titre sur TMDB et retourne son entrée de cache.
+
+    S'il y a des homonymes, l'entrée garde la liste dans « candidates » (le
+    premier film est retenu en attendant le choix, voir choose()).
+    """
+    movie, status, candidates = search(raw)
     entry = {"status": status}
     if movie:
-        director, country = details(movie["id"])
-        entry.update(
-            id=movie["id"],
-            title=movie.get("title", ""),
-            original_title=movie.get("original_title", ""),
-            date=movie.get("release_date", ""),
-            director=director,
-            country=country,
-        )
+        entry.update(movie_entry(candidate(movie)))
+    if candidates:
+        entry["candidates"] = candidates
     return entry
+
+
+def choose(entry, movie_id):
+    """Entrée de cache après le choix d'un des homonymes : statut OK."""
+    if movie_id == entry.get("id"):  # le film déjà retenu : rien à recharger
+        chosen = {k: v for k, v in entry.items() if k != "candidates"}
+    else:
+        c = next(c for c in entry["candidates"] if c["id"] == movie_id)
+        chosen = movie_entry(c)
+    chosen["status"] = "OK"
+    return chosen
 
 
 def found_label(e):
@@ -257,6 +291,8 @@ def found_label(e):
         label += f" ({e['date'][:4]})"
     if e.get("original_title") and norm(e["original_title"]) != norm(e.get("title")):
         label += f" [{e['original_title']}]"
+    if e.get("candidates"):
+        label += f" — {len(e['candidates'])} films portent ce titre, à choisir dans l'interface"
     return label
 
 

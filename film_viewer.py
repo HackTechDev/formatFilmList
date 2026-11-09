@@ -31,6 +31,12 @@ sera cherché au prochain lancement de tmdb_enrich.py.
 Films « NON TRAITÉ » : un clic sur « NON TRAITÉ » cherche tout de suite ce
 titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
 
+Homonymes : quand plusieurs films portent exactement le titre cherché (ex.
+« Les Maîtres de l'univers » de 1987 et de 2026), une petite fenêtre propose
+de choisir le bon pendant la recherche (la synchronisation attend le choix).
+« Passer » laisse le film « À VÉRIFIER » ; clic droit → « Choisir parmi les
+homonymes… » pour choisir plus tard.
+
 Bouton « Synchronisation » : cherche sur TMDB tous les titres encore « NON
 TRAITÉ », en arrière-plan avec une barre de progression (bouton « Arrêter »
 ou touche Échap pour interrompre), puis régénère les fichiers de résultats.
@@ -38,15 +44,17 @@ ou touche Échap pour interrompre), puis régénère les fichiers de résultats.
 import json
 import os
 import sys
+import threading
 
 from PyQt6.QtCore import (QFileSystemWatcher, QSortFilterProxyModel, Qt,
                           QThread, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence, QShortcut,
                          QStandardItem, QStandardItemModel)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
-                             QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu,
-                             QMessageBox, QProgressBar, QPushButton, QTableView,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
+                             QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+                             QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+                             QMenu, QMessageBox, QProgressBar, QPushButton,
+                             QTableView, QVBoxLayout, QWidget)
 
 import tmdb_enrich
 import tmdb_export
@@ -152,25 +160,104 @@ def store_entries(cache_path, entries):
     os.replace(tmp, cache_path)
 
 
-class LookupThread(QThread):
+class ChooseFilmDialog(QDialog):
+    """Petite fenêtre pour choisir le bon film parmi des homonymes."""
+
+    def __init__(self, raw, candidates, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Plusieurs films portent ce titre")
+        self.resize(560, 360)
+        self.choice = None
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Plusieurs films correspondent à « {raw} ».\n"
+                                "Choisis le bon (double-clic ou « Choisir ») :"))
+        self.list = QListWidget()
+        for c in candidates:
+            year = c.get("date", "")[:4] or "année inconnue"
+            text = f"{c.get('title') or c.get('original_title')} ({year})"
+            if c.get("original_title") and c["original_title"] != c.get("title"):
+                text += f" — {c['original_title']}"
+            overview = c.get("overview", "")
+            if overview:
+                text += "\n    " + (overview[:110] + "…" if len(overview) > 110 else overview)
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, c["id"])
+            item.setToolTip(overview or "Pas de résumé sur TMDB")
+            self.list.addItem(item)
+        self.list.setCurrentRow(0)
+        self.list.itemDoubleClicked.connect(lambda _: self.pick())
+        layout.addWidget(self.list)
+        buttons = QDialogButtonBox()
+        tmdb_btn = buttons.addButton("Voir sur TMDB", QDialogButtonBox.ButtonRole.HelpRole)
+        choose_btn = buttons.addButton("Choisir", QDialogButtonBox.ButtonRole.AcceptRole)
+        skip_btn = buttons.addButton("Passer (à vérifier plus tard)",
+                                     QDialogButtonBox.ButtonRole.RejectRole)
+        tmdb_btn.clicked.connect(self.open_tmdb)
+        choose_btn.clicked.connect(self.pick)
+        skip_btn.clicked.connect(self.reject)  # Échap fait de même
+        choose_btn.setDefault(True)
+        layout.addWidget(buttons)
+
+    def current_id(self):
+        item = self.list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def open_tmdb(self):
+        if self.current_id():
+            QDesktopServices.openUrl(QUrl(tmdb_export.TMDB_URL.format(self.current_id())))
+
+    def pick(self):
+        self.choice = self.current_id()
+        self.accept()
+
+
+class TmdbThread(QThread):
+    """Fil de recherche TMDB qui peut demander de choisir parmi des homonymes."""
+    ambiguous = pyqtSignal(str, object)   # titre, entrée avec « candidates »
+
+    def resolve(self, raw, entry):
+        """Homonymes : attend le choix fait dans l'interface (answer())."""
+        if not entry.get("candidates"):
+            return entry
+        if self.isInterruptionRequested():
+            return entry
+        self._choice, self._answered = None, threading.Event()
+        self.ambiguous.emit(raw, entry)
+        # Attente du choix ; on vérifie régulièrement si l'interface ferme,
+        # pour ne jamais rester bloqué sur une question sans réponse.
+        while not self._answered.wait(0.1):
+            if self.isInterruptionRequested():
+                return entry
+        if self._choice is None:  # « Passer » : reste À VÉRIFIER
+            return entry
+        return tmdb_enrich.choose(entry, self._choice)
+
+    def answer(self, choice):
+        self._choice = choice
+        if getattr(self, "_answered", None):
+            self._answered.set()
+
+
+class LookupThread(TmdbThread):
     """Recherche TMDB d'un titre, hors du fil de l'interface."""
     found = pyqtSignal(str, object)   # titre, entrée de cache
     failed = pyqtSignal(str, str)     # titre, message d'erreur
 
-    def __init__(self, raw, parent):
+    def __init__(self, raw, parent, job=None):
         super().__init__(parent)
         self.raw = raw
+        self.job = job or (lambda: tmdb_enrich.lookup(raw))
 
     def run(self):
         try:
-            self.found.emit(self.raw, tmdb_enrich.lookup(self.raw))
+            self.found.emit(self.raw, self.resolve(self.raw, self.job()))
         except tmdb_enrich.TmdbError as e:
             self.failed.emit(self.raw, str(e))
         except Exception as e:  # réseau, réponse inattendue…
             self.failed.emit(self.raw, f"{type(e).__name__} : {e}")
 
 
-class SyncThread(QThread):
+class SyncThread(TmdbThread):
     """Recherche TMDB de plusieurs titres à la suite, interruptible."""
     progress = pyqtSignal(int, int, str)   # titres faits, total, titre en cours
     found = pyqtSignal(str, object)        # titre, entrée de cache
@@ -188,7 +275,7 @@ class SyncThread(QThread):
                 return
             self.progress.emit(i, total, raw)
             try:
-                entry = tmdb_enrich.lookup(raw)
+                entry = self.resolve(raw, tmdb_enrich.lookup(raw))
             except tmdb_enrich.TmdbError as e:
                 self.fatal.emit(str(e))
                 return
@@ -428,6 +515,10 @@ class FilmViewer(QMainWindow):
         editable = film[COL_STATUS] == "INTROUVABLE"
         raw_item.setEditable(editable)
         raw_item.setToolTip("Double-clic (ou F2) pour corriger le titre" if editable else "")
+        homonyms = self.cache.get(film[COL_RAW], {}).get("candidates")
+        if homonyms and film[COL_STATUS] == "À VÉRIFIER":
+            items[COL_STATUS].setToolTip(f"{len(homonyms)} films portent ce titre — "
+                                         "clic droit → « Choisir parmi les homonymes… »")
         if film[COL_STATUS] == NOT_DONE and (film[COL_RAW] in self.lookups
                                              or film[COL_RAW] == self.sync_current):
             self.set_status(items[COL_STATUS], SEARCHING)
@@ -460,17 +551,39 @@ class FilmViewer(QMainWindow):
         raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
         if raw in self.lookups:
             return
-        thread = LookupThread(raw, self)
+        self.start_lookup(raw)
+        self.statusBar().showMessage(f"Recherche de « {raw} » sur TMDB…")
+
+    def start_lookup(self, raw, job=None):
+        """Lance une recherche (ou un autre travail TMDB) pour ce titre."""
+        thread = LookupThread(raw, self, job)
         thread.found.connect(self.on_lookup_found)
         thread.failed.connect(self.on_lookup_failed)
+        thread.ambiguous.connect(self.on_ambiguous)
         thread.finished.connect(lambda raw=raw: self.lookups.pop(raw, None))
         self.lookups[raw] = thread
         self.loading = True
         for row in self.rows_of(raw):
             self.set_status(self.model.item(row, COL_STATUS), SEARCHING)
         self.loading = False
-        self.statusBar().showMessage(f"Recherche de « {raw} » sur TMDB…")
         thread.start()
+
+    def on_ambiguous(self, raw, entry):
+        """Un fil de recherche attend : choisir parmi les homonymes."""
+        thread = self.sender()
+        dialog = ChooseFilmDialog(raw, entry["candidates"], self)
+        if self.sync is thread:
+            self.sync_label.setText(f"Synchronisation : choix en attente pour « {raw} »")
+        dialog.exec()
+        thread.answer(dialog.choice)
+
+    def choose_homonym(self, raw):
+        """Clic droit → choisir parmi les homonymes gardés dans le cache."""
+        entry = self.cache.get(raw, {})
+        dialog = ChooseFilmDialog(raw, entry.get("candidates", []), self)
+        if dialog.exec() and dialog.choice is not None:
+            self.start_lookup(raw, job=lambda: tmdb_enrich.choose(entry, dialog.choice))
+            self.statusBar().showMessage(f"« {raw} » : chargement du film choisi…")
 
     def apply_entry(self, raw, entry):
         """Affiche le résultat TMDB d'un titre sur toutes ses lignes."""
@@ -563,17 +676,20 @@ class FilmViewer(QMainWindow):
             f"« {raw} » → {title} : " + ("validé (OK)" if validated else "à vérifier"), 6000)
 
     def on_context_menu(self, pos):
-        """Clic droit sur un film validé : proposer d'annuler la validation."""
+        """Clic droit : choisir parmi les homonymes, annuler une validation."""
         index = self.table.indexAt(pos)
         if not index.isValid():
             return
         r = self.proxy.mapToSource(index).row()
         raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
-        if not tmdb_export.is_validated(raw, self.cache.get(raw, {}), self.validations):
-            return
+        entry = self.cache.get(raw, {})
         menu = QMenu(self)
-        menu.addAction("Annuler la validation", lambda: self.unvalidate(raw))
-        menu.exec(self.table.viewport().mapToGlobal(pos))
+        if entry.get("candidates") and raw not in self.lookups:
+            menu.addAction("Choisir parmi les homonymes…", lambda: self.choose_homonym(raw))
+        if tmdb_export.is_validated(raw, entry, self.validations):
+            menu.addAction("Annuler la validation", lambda: self.unvalidate(raw))
+        if menu.actions():
+            menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def unvalidate(self, raw):
         """Retire la validation : le film redevient « À VÉRIFIER », avec sa case."""
@@ -732,6 +848,7 @@ class FilmViewer(QMainWindow):
         self.sync.found.connect(self.on_sync_found)
         self.sync.title_failed.connect(self.on_sync_title_failed)
         self.sync.fatal.connect(self.on_sync_fatal)
+        self.sync.ambiguous.connect(self.on_ambiguous)
         self.sync.finished.connect(self.on_sync_finished)
         self.sync_btn.setText("Arrêter la synchronisation")
         self.sync_btn.setToolTip("Arrêter la synchronisation (Échap)")
@@ -864,8 +981,11 @@ class FilmViewer(QMainWindow):
             if self.sync:
                 self.sync.finished.disconnect()   # pas de bilan à la fermeture
                 self.sync.requestInterruption()
+                self.sync.answer(None)            # s'il attendait un choix
                 self.sync.wait()                  # le titre en cours se termine
             for thread in list(self.lookups.values()):
+                thread.requestInterruption()
+                thread.answer(None)
                 thread.wait()  # laisser finir les recherches en cours
             QApplication.processEvents()          # derniers résultats reçus
             self.flush_pending()

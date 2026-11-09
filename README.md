@@ -195,6 +195,24 @@ Les fichiers sont réécrits à partir de la liste, du cache et de
 `À VÉRIFIER`), les corrections de titres sont prises en compte, et les titres
 pas encore cherchés apparaissent en `NON TRAITÉ` dans le tableau complet.
 
+## Films homonymes
+
+Quand plusieurs films portent exactement le titre cherché (par exemple
+« Les Maîtres de l'univers » de 1987 et de 2026), le film n'est pas classé
+`OK` d'office :
+
+- dans l'interface (recherche au clic ou **Synchronisation**), une petite
+  fenêtre liste les films possibles avec leur année, leur titre original et
+  un résumé. **Choisir** (ou double-clic) retient le film et le passe en
+  `OK` ; **Voir sur TMDB** ouvre sa fiche ; **Passer** (ou Échap) le laisse
+  `À VÉRIFIER`. La synchronisation attend la réponse avant de continuer ;
+- `./films.sh enrichir` ne peut pas poser la question : il retient le premier
+  film en `À VÉRIFIER` et garde la liste des homonymes dans le cache.
+
+Dans les deux cas, un film `À VÉRIFIER` avec des homonymes se choisit plus tard
+dans l'interface : clic droit sur sa ligne → **Choisir parmi les
+homonymes…**. Ajouter l'année dans la liste (`Carrie 2013`) évite la question.
+
 ## Cache et reprise
 
 Les résultats sont enregistrés au fur et à mesure dans `.tmdb_cache.json`
@@ -219,6 +237,5 @@ rm .tmdb_cache.json
   connexion à `api.themoviedb.org`.
 - **`Clé TMDB refusée (401)`** : la clé de `config.ini` (ou de la variable
   `TMDB_API_KEY`) est incomplète ou invalide ; relance `./films.sh config`.
-- **Titres homonymes** : pour un titre comme « Carrie », le script retient le
-  film qui correspond exactement, pas forcément la version voulue. Ajoute
-  l'année dans la liste (`Carrie 2013`) pour lever l'ambiguïté.
+- **Titres homonymes** : voir « Films homonymes » ci-dessus. Ajouter l'année
+  dans la liste (`Carrie 2013`) évite la question.
