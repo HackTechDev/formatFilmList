@@ -53,13 +53,13 @@ STATUS_COLORS = {
 }
 SEARCHING = "RECHERCHE…"
 COLUMNS = ["#", "Statut", "Validé", "Titre (liste)", "Titre TMDB", "Titre original",
-           "Date de sortie", "Réalisateur", "ID TMDB"]
+           "Date de sortie", "Réalisateur", "Pays", "ID TMDB"]
 COL_STATUS = COLUMNS.index("Statut")
 COL_CHECK = COLUMNS.index("Validé")
 COL_RAW = COLUMNS.index("Titre (liste)")
 COL_ID = COLUMNS.index("ID TMDB")
 COL_TITLES = [COLUMNS.index(c) for c in ("Titre (liste)", "Titre TMDB", "Titre original")]
-COL_SEARCH = COL_TITLES + [COLUMNS.index("Réalisateur")]
+COL_SEARCH = COL_TITLES + [COLUMNS.index("Réalisateur"), COLUMNS.index("Pays")]
 # Statut utilisé par le filtre : figé jusqu'au prochain changement de filtre,
 # pour qu'une ligne cochée ne disparaisse pas sous le curseur.
 FILTER_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -76,7 +76,7 @@ def film_row(i, raw, e, validations):
     validated = tmdb_export.is_validated(raw, e, validations) if checkable else None
     status = tmdb_export.effective_status(raw, e, validations) if e else NOT_DONE
     return [i, status, validated, raw, e.get("title", ""), e.get("original_title", ""),
-            e.get("date", ""), e.get("director", ""), e.get("id", "")]
+            e.get("date", ""), e.get("director", ""), e.get("country", ""), e.get("id", "")]
 
 
 def rename_in_list(list_path, num, old, new):
@@ -211,7 +211,7 @@ class FilmViewer(QMainWindow):
         self.status_combo = QComboBox()
         self.status_combo.currentIndexChanged.connect(self.on_status_filter)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Rechercher un titre ou un réalisateur…")
+        self.search.setPlaceholderText("Rechercher un titre, un réalisateur ou un pays…")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.proxy.set_text)
         open_btn = QPushButton("Ouvrir une liste…")

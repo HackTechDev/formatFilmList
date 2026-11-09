@@ -3,7 +3,7 @@
 et film_viewer.py.
 
 Une ligne de film est une liste :
-    [#, titre (liste), titre TMDB, titre original, date, réalisateur, ID TMDB, statut]
+    [#, titre (liste), titre TMDB, titre original, date, réalisateur, pays, ID TMDB, statut]
 """
 import csv
 import json
@@ -11,8 +11,9 @@ import os
 import unicodedata
 
 HEADER = ["#", "Titre (liste)", "Titre TMDB", "Titre original",
-          "Date de sortie", "Réalisateur", "ID TMDB", "Statut"]
-I_NUM, I_RAW, I_TITLE, I_ID, I_STATUS = 0, 1, 2, 6, 7
+          "Date de sortie", "Réalisateur", "Pays", "ID TMDB", "Statut"]
+I_NUM, I_RAW, I_TITLE = 0, 1, 2
+I_ID, I_STATUS = HEADER.index("ID TMDB"), HEADER.index("Statut")
 STATUSES = ["OK", "À VÉRIFIER", "INTROUVABLE"]
 TMDB_URL = "https://www.themoviedb.org/movie/{}"
 

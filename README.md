@@ -3,7 +3,12 @@
 Ce dépôt contient une liste de films (`liste_film.md`) et un script Python
 (`tmdb_enrich.py`). Le script cherche chaque titre sur
 [TMDB](https://www.themoviedb.org/) (The Movie Database) et récupère sa date
-de sortie, son ou ses réalisateurs et son identifiant TMDB.
+de sortie, son ou ses réalisateurs, son pays et son identifiant TMDB.
+
+Le pays est le pays d'origine indiqué par TMDB (à défaut, les pays de
+production), en français. Les films mis en cache avant l'ajout de cette
+colonne reçoivent leur pays au lancement suivant de `./films.sh enrichir`,
+sans refaire la recherche du titre.
 
 ## Prérequis
 

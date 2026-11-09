@@ -192,10 +192,43 @@ def search(raw):
     return (best, "À VÉRIFIER") if best else (None, "INTROUVABLE")
 
 
-def directors(movie_id):
-    crew = api_get(f"/movie/{movie_id}/credits", language=LANG).get("crew", [])
-    names = [c["name"] for c in crew if c.get("job") == "Director"]
-    return ", ".join(dict.fromkeys(names))
+_COUNTRY_NAMES = None
+
+
+def country_names():
+    """{code ISO: nom du pays en français}, demandé une fois à TMDB."""
+    global _COUNTRY_NAMES
+    if _COUNTRY_NAMES is None:
+        try:
+            data = api_get("/configuration/countries", language=LANG)
+            _COUNTRY_NAMES = {c["iso_3166_1"]: c.get("native_name") or c.get("english_name")
+                              or c["iso_3166_1"] for c in data}
+        except (urllib.error.HTTPError, RuntimeError):
+            _COUNTRY_NAMES = {}  # à défaut, les codes (JP, HK…) sont affichés
+    return _COUNTRY_NAMES
+
+
+def details(movie_id):
+    """(réalisateur(s), pays) d'un film, en une seule requête."""
+    d = api_get(f"/movie/{movie_id}", language=LANG, append_to_response="credits")
+    crew = (d.get("credits") or {}).get("crew", [])
+    directors = [c["name"] for c in crew if c.get("job") == "Director"]
+    # Pays d'origine ; à défaut, pays de production.
+    codes = d.get("origin_country") or [c["iso_3166_1"] for c in d.get("production_countries", [])]
+    names = country_names()
+    countries = [names.get(c, c) for c in codes]
+    return ", ".join(dict.fromkeys(directors)), ", ".join(dict.fromkeys(countries))
+
+
+def complete(entry):
+    """Ajoute le pays à une entrée de cache qui date d'avant cette colonne."""
+    if not entry.get("id") or "country" in entry:
+        return False
+    director, country = details(entry["id"])
+    entry["country"] = country
+    if not entry.get("director"):
+        entry["director"] = director
+    return True
 
 
 def lookup(raw):
@@ -203,12 +236,14 @@ def lookup(raw):
     movie, status = search(raw)
     entry = {"status": status}
     if movie:
+        director, country = details(movie["id"])
         entry.update(
             id=movie["id"],
             title=movie.get("title", ""),
             original_title=movie.get("original_title", ""),
             date=movie.get("release_date", ""),
-            director=directors(movie["id"]),
+            director=director,
+            country=country,
         )
     return entry
 
@@ -250,12 +285,15 @@ def main():
         for i, raw in enumerate(titles, 1):
             if raw not in cache:
                 cache[raw] = lookup(raw)
+                source = ""
+            elif complete(cache[raw]):  # cache d'avant la colonne « Pays »
+                source = " (pays ajouté)"
+            else:
+                source = " (cache)"
+            if source != " (cache)":
                 new += 1
                 if new % 25 == 0:
                     save_cache(cache)
-                source = ""
-            else:
-                source = " (cache)"
             e = cache[raw]
             status = tmdb_export.effective_status(raw, e, validations)
             if tmdb_export.is_validated(raw, e, validations):
@@ -265,7 +303,8 @@ def main():
             counts[status] = counts.get(status, 0) + 1
             rows.append([
                 i, raw, e.get("title", ""), e.get("original_title", ""),
-                e.get("date", ""), e.get("director", ""), e.get("id", ""), status,
+                e.get("date", ""), e.get("director", ""), e.get("country", ""),
+                e.get("id", ""), status,
             ])
     finally:  # sauvegarde même en cas de plantage ou de Ctrl+C
         save_cache(cache)
