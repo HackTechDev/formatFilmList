@@ -22,3 +22,7 @@ claude_task.md
 
 # Liste de films personnelle (reste en local)
 liste_film.md
+
+# Validations personnelles (titres de la liste, restent en local)
+validations.json
+validations.json.tmp

@@ -41,7 +41,8 @@ Le format accepté (année, sous-titres, mentions d'édition…) est détaillé 
 « Format de la liste » ci-dessous.
 
 Le fichier est ignoré par Git (`.gitignore`) : la liste reste personnelle et
-n'est jamais envoyée dans le dépôt. Pense à en garder une copie de
+n'est jamais envoyée dans le dépôt. Il en va de même pour `validations.json`,
+qui contient les titres de la liste. Pense à en garder une copie de
 sauvegarde, car Git ne la conserve pas. Une liste portant un autre nom
 fonctionne aussi : il suffit de la passer en argument
 (`python3 tmdb_enrich.py ma_liste.md`, `python3 film_viewer.py ma_liste.md`).
