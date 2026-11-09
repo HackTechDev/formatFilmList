@@ -14,10 +14,33 @@ de sortie, son ou ses réalisateurs et son identifiant TMDB.
   - la « Clé d'API » (v3) ;
   - le « Jeton d'accès en lecture à l'API » (v4, il commence par `eyJ`).
 
+## Configuration de la clé
+
+La clé est rangée dans `config.ini`, à côté des scripts. Ce fichier est ignoré
+par Git pour que la clé ne soit jamais commitée. Pour le créer :
+
+```bash
+./films.sh config
+```
+
+La clé est demandée sans être affichée, et le fichier n'est lisible que par
+toi. On peut aussi copier le modèle et le remplir à la main :
+
+```bash
+cp config.ini.example config.ini
+```
+
+```ini
+[tmdb]
+api_key = ta_clé
+```
+
+Si la variable d'environnement `TMDB_API_KEY` est définie, elle est
+prioritaire sur `config.ini`.
+
 ## Utilisation
 
 ```bash
-export TMDB_API_KEY="ta_clé"
 python3 tmdb_enrich.py liste_film.md
 ```
 
@@ -27,6 +50,21 @@ avant de lancer toute la liste, mets-les dans un autre fichier :
 ```bash
 python3 tmdb_enrich.py test_films.md
 ```
+
+### Avec le lanceur `films.sh`
+
+```bash
+./films.sh config                  # enregistre la clé TMDB dans config.ini
+./films.sh enrichir [liste.md]     # cherche les films sur TMDB
+./films.sh interface [liste.md]    # ouvre l'interface graphique
+./films.sh test                    # essai rapide sur test_films.md
+./films.sh vider-cache [liste.md]  # supprime le cache (avec confirmation)
+./films.sh aide
+```
+
+Sans argument, la liste utilisée est `liste_film.md`. Le lanceur vérifie
+Python et PyQt6 avant de démarrer, et se place dans le dossier de la liste pour
+que les résultats, le cache et `validations.json` y soient écrits.
 
 ### Format de la liste
 
@@ -123,8 +161,8 @@ rm .tmdb_cache.json
   chaque requête pouvait attendre plusieurs minutes. Le script essaie
   désormais l'IPv4 en premier ; si le problème réapparaît, vérifie ta
   connexion à `api.themoviedb.org`.
-- **`Clé TMDB refusée (401)`** : la variable `TMDB_API_KEY` est absente,
-  incomplète ou invalide.
+- **`Clé TMDB refusée (401)`** : la clé de `config.ini` (ou de la variable
+  `TMDB_API_KEY`) est incomplète ou invalide ; relance `./films.sh config`.
 - **Titres homonymes** : pour un titre comme « Carrie », le script retient le
   film qui correspond exactement, pas forcément la version voulue. Ajoute
   l'année dans la liste (`Carrie 2013`) pour lever l'ambiguïté.

@@ -4,8 +4,14 @@ Enrichit une liste de films (un titre par ligne) avec les données TMDB :
 date de sortie, réalisateur(s), ID TMDB.
 
 Usage :
-    export TMDB_API_KEY="ta_clé_v3"        # ou le "API Read Access Token" (v4)
     python3 tmdb_enrich.py liste_film.md
+
+Clé TMDB (clé v3 ou "API Read Access Token" v4), lue dans cet ordre :
+    1. la variable d'environnement TMDB_API_KEY ;
+    2. le fichier config.ini à côté de ce script :
+           [tmdb]
+           api_key = ta_clé
+       (modèle : config.ini.example ; créé aussi par « ./films.sh config »)
 
 Sorties :
     liste_film_tmdb.md   tableau Markdown (ordre d'origine conservé)
@@ -22,6 +28,7 @@ Colonne "Statut" :
 
 Aucune dépendance externe (stdlib uniquement).
 """
+import configparser
 import http.client
 import json
 import os
@@ -53,9 +60,28 @@ def _getaddrinfo_ipv4_first(*args, **kwargs):
 
 socket.getaddrinfo = _getaddrinfo_ipv4_first
 
-KEY = os.environ.get("TMDB_API_KEY", "").strip()
-if not KEY:
-    sys.exit("Définis TMDB_API_KEY (clé v3 ou jeton v4) avant de lancer le script.")
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+
+
+def load_key():
+    """Clé TMDB : variable TMDB_API_KEY, sinon [tmdb] api_key dans config.ini."""
+    key = os.environ.get("TMDB_API_KEY", "").strip()
+    if key:
+        return key
+    if os.path.exists(CONFIG_FILE):
+        config = configparser.ConfigParser(interpolation=None)
+        try:
+            config.read(CONFIG_FILE, encoding="utf-8")
+        except configparser.Error as e:
+            sys.exit(f"{CONFIG_FILE} illisible : {e}")
+        key = config.get("tmdb", "api_key", fallback="").strip().strip("\"'")
+        if key:
+            return key
+    sys.exit("Clé TMDB absente. Lance « ./films.sh config », ou copie\n"
+             f"config.ini.example en {CONFIG_FILE} et renseigne api_key.")
+
+
+KEY = load_key()
 USE_BEARER = KEY.startswith("eyJ")  # jeton v4 = JWT
 
 # Suffixes d'édition à retirer pour la recherche

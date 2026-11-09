@@ -1,0 +1,10 @@
+# Configuration de tmdb_enrich.py
+# Copier ce fichier en config.ini (ignoré par Git) et renseigner la clé,
+# ou lancer « ./films.sh config ».
+#
+# Clé : « Clé d'API » (v3) ou « Jeton d'accès en lecture » (v4, commence
+# par eyJ), sur themoviedb.org → Paramètres → API.
+# La variable d'environnement TMDB_API_KEY, si elle est définie, est prioritaire.
+
+[tmdb]
+api_key =

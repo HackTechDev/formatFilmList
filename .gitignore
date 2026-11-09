@@ -9,3 +9,7 @@ __pycache__/
 
 # Secrets
 .env
+config.ini
+
+# Notes locales
+claude_task.md
