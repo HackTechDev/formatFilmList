@@ -129,6 +129,14 @@ python3 film_viewer.py test_films.md  # une autre liste
   jusqu'au prochain changement de filtre, ce qui permet de décocher en cas
   d'erreur.
 
+- **Quitter** (ou Ctrl+Q, ou la croix de la fenêtre) : une petite fenêtre
+  demande de confirmer avant de fermer ;
+- **correction des titres `INTROUVABLE`** : double-clic (ou F2) sur la
+  cellule « Titre (liste) » pour corriger le titre, puis Entrée. La correction
+  est écrite directement dans la liste (`liste_film.md`) ; le film passe en
+  `NON TRAITÉ` et sera recherché au prochain `./films.sh enrichir`. Si le
+  nouveau titre est déjà dans le cache, son statut s'affiche tout de suite.
+
 Les validations sont enregistrées dans `validations.json`, à côté de la liste
 (titre de la liste → ID TMDB validé). `tmdb_enrich.py` les reprend : les films
 validés apparaissent en `OK` dans tous les fichiers produits. Ce fichier est

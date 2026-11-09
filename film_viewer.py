@@ -17,6 +17,10 @@ appliqués) en Markdown ou en CSV.
 Colonne « Validé » : cocher un film « À VÉRIFIER » valide le titre TMDB
 proposé ; il passe en « OK ». Les validations sont enregistrées dans
 validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
+
+Films « INTROUVABLE » : double-clic (ou F2) sur « Titre (liste) » pour
+corriger le titre. La correction est écrite dans la liste ; le nouveau titre
+sera cherché au prochain lancement de tmdb_enrich.py.
 """
 import json
 import os
@@ -24,7 +28,8 @@ import sys
 
 from PyQt6.QtCore import (QFileSystemWatcher, QSortFilterProxyModel, Qt,
                           QTimer, QUrl)
-from PyQt6.QtGui import QColor, QDesktopServices, QStandardItem, QStandardItemModel
+from PyQt6.QtGui import (QColor, QDesktopServices, QKeySequence, QShortcut,
+                         QStandardItem, QStandardItemModel)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
                              QHeaderView, QLabel, QLineEdit, QMainWindow,
                              QMessageBox, QPushButton, QTableView, QVBoxLayout,
@@ -52,14 +57,48 @@ COL_SEARCH = COL_TITLES + [COLUMNS.index("Réalisateur")]
 # Statut utilisé par le filtre : figé jusqu'au prochain changement de filtre,
 # pour qu'une ligne cochée ne disparaisse pas sous le curseur.
 FILTER_ROLE = Qt.ItemDataRole.UserRole + 1
+RAW_ROLE = Qt.ItemDataRole.UserRole + 2  # titre tel qu'il est dans le fichier
+
+
+def film_row(i, raw, e, validations):
+    """Ligne suivant COLUMNS pour le titre n° i de la liste et son entrée de cache.
+
+    La colonne « Validé » vaut None si le film ne peut pas être validé
+    (statut autre que « À VÉRIFIER »), sinon True/False.
+    """
+    checkable = e.get("status") == "À VÉRIFIER" and bool(e.get("id"))
+    validated = tmdb_export.is_validated(raw, e, validations) if checkable else None
+    status = tmdb_export.effective_status(raw, e, validations) if e else NOT_DONE
+    return [i, status, validated, raw, e.get("title", ""), e.get("original_title", ""),
+            e.get("date", ""), e.get("director", ""), e.get("id", "")]
+
+
+def rename_in_list(list_path, num, old, new):
+    """Remplace le titre n° num (lignes non vides comptées) de la liste."""
+    with open(list_path, encoding="utf-8", newline="") as f:  # garde \r\n tel quel
+        lines = f.read().splitlines(keepends=True)
+    count = 0
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        count += 1
+        if count == num:
+            if line.strip() != old:
+                raise ValueError(f"la ligne {num} de la liste a changé "
+                                 f"(« {line.strip()} » au lieu de « {old} »)")
+            end = line[len(line.rstrip("\r\n")):]  # retour à la ligne d'origine
+            lines[idx] = new + end
+            break
+    else:
+        raise ValueError(f"la liste n'a plus de ligne {num}")
+    tmp = list_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write("".join(lines))
+    os.replace(tmp, list_path)
 
 
 def load_films(list_path):
-    """Une ligne par titre de la liste, complétée par le cache TMDB.
-
-    Chaque ligne suit COLUMNS ; la colonne « Validé » vaut None si le film
-    ne peut pas être validé (statut autre que « À VÉRIFIER »), sinon True/False.
-    """
+    """Une ligne (voir film_row) par titre de la liste, complétée par le cache."""
     with open(list_path, encoding="utf-8") as f:
         titles = [l.strip() for l in f if l.strip()]
     cache = {}
@@ -71,16 +110,9 @@ def load_films(list_path):
         except (OSError, json.JSONDecodeError):
             pass  # cache illisible : tout apparaît comme non traité
     validations = tmdb_export.load_validations(list_path)
-    films = []
-    for i, raw in enumerate(titles, 1):
-        e = cache.get(raw, {})
-        checkable = e.get("status") == "À VÉRIFIER" and bool(e.get("id"))
-        validated = tmdb_export.is_validated(raw, e, validations) if checkable else None
-        status = tmdb_export.effective_status(raw, e, validations) if e else NOT_DONE
-        films.append([i, status, validated, raw, e.get("title", ""),
-                      e.get("original_title", ""), e.get("date", ""),
-                      e.get("director", ""), e.get("id", "")])
-    return films, cache_path, validations
+    films = [film_row(i, raw, cache.get(raw, {}), validations)
+             for i, raw in enumerate(titles, 1)]
+    return films, cache_path, validations, cache
 
 
 class FilmFilter(QSortFilterProxyModel):
@@ -125,7 +157,9 @@ class FilmViewer(QMainWindow):
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+        # Seul le titre des films INTROUVABLE est modifiable (voir fill_row).
+        self.table.setEditTriggers(QTableView.EditTrigger.DoubleClicked
+                                   | QTableView.EditTrigger.EditKeyPressed)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().hide()
         header = self.table.horizontalHeader()
@@ -141,6 +175,10 @@ class FilmViewer(QMainWindow):
         self.search.textChanged.connect(self.proxy.set_text)
         open_btn = QPushButton("Ouvrir une liste…")
         open_btn.clicked.connect(self.choose_file)
+        quit_btn = QPushButton("Quitter")
+        quit_btn.setToolTip("Fermer l'interface (Ctrl+Q)")
+        quit_btn.clicked.connect(self.close)  # confirmation dans closeEvent
+        QShortcut(QKeySequence.StandardKey.Quit, self, activated=self.close)
         reload_btn = QPushButton("Recharger")
         reload_btn.clicked.connect(self.reload)
         export_btn = QPushButton("Exporter…")
@@ -154,6 +192,7 @@ class FilmViewer(QMainWindow):
         bar.addWidget(reload_btn)
         bar.addWidget(export_btn)
         bar.addWidget(open_btn)
+        bar.addWidget(quit_btn)
         layout = QVBoxLayout()
         layout.addLayout(bar)
         layout.addWidget(self.table)
@@ -163,6 +202,7 @@ class FilmViewer(QMainWindow):
 
         self.loading = False
         self.validations = {}
+        self.cache = {}
         self.stamp = None
         self.model.itemChanged.connect(self.on_item_changed)
 
@@ -208,7 +248,7 @@ class FilmViewer(QMainWindow):
 
     def reload(self):
         try:
-            films, cache_path, self.validations = load_films(self.list_path)
+            films, cache_path, self.validations, self.cache = load_films(self.list_path)
         except OSError as e:
             QMessageBox.critical(self, "Erreur", f"Impossible de lire {self.list_path} :\n{e}")
             return
@@ -222,30 +262,45 @@ class FilmViewer(QMainWindow):
         self.model.removeRows(0, self.model.rowCount())
         for film in films:
             row = []
-            for col, value in enumerate(film):
+            for _ in COLUMNS:
                 item = QStandardItem()
-                if col == COL_CHECK:
-                    item.setEditable(False)
-                    item.setCheckable(value is not None)
-                    if value is not None:
-                        item.setCheckState(Qt.CheckState.Checked if value
-                                           else Qt.CheckState.Unchecked)
-                        item.setToolTip("Cocher pour valider le titre TMDB proposé")
-                elif col == 0 or (col == COL_ID and value != ""):
-                    item.setData(int(value), Qt.ItemDataRole.DisplayRole)  # tri numérique
-                else:
-                    item.setText(str(value))
+                item.setEditable(False)
                 row.append(item)
-            self.set_status(row[COL_STATUS], film[COL_STATUS], film[COL_CHECK])
-            row[COL_STATUS].setData(film[COL_STATUS], FILTER_ROLE)
-            if film[COL_ID]:
-                row[COL_ID].setToolTip("Double-clic : ouvrir la fiche TMDB")
             self.model.appendRow(row)
+            r = self.model.rowCount() - 1
+            self.fill_row(r, film)
+            self.model.item(r, COL_STATUS).setData(film[COL_STATUS], FILTER_ROLE)
         self.loading = False
 
         self.fill_status_combo()
         self.update_count()
         self.table.verticalScrollBar().setValue(scroll)
+
+    def fill_row(self, r, film):
+        """Remplit la ligne r du modèle avec les valeurs de film (voir film_row)."""
+        items = [self.model.item(r, c) for c in range(len(COLUMNS))]
+        for col, value in enumerate(film):
+            item = items[col]
+            if col == COL_CHECK:
+                item.setCheckable(value is not None)
+                if value is not None:
+                    item.setCheckState(Qt.CheckState.Checked if value
+                                       else Qt.CheckState.Unchecked)
+                else:
+                    item.setData(None, Qt.ItemDataRole.CheckStateRole)
+                item.setToolTip("Cocher pour valider le titre TMDB proposé"
+                                if value is not None else "")
+            elif col == 0 or (col == COL_ID and value != ""):
+                item.setData(int(value), Qt.ItemDataRole.DisplayRole)  # tri numérique
+            else:
+                item.setData(str(value), Qt.ItemDataRole.DisplayRole)
+        self.set_status(items[COL_STATUS], film[COL_STATUS], film[COL_CHECK])
+        items[COL_ID].setToolTip("Double-clic : ouvrir la fiche TMDB" if film[COL_ID] else "")
+        raw_item = items[COL_RAW]
+        raw_item.setData(film[COL_RAW], RAW_ROLE)
+        editable = film[COL_STATUS] == "INTROUVABLE"
+        raw_item.setEditable(editable)
+        raw_item.setToolTip("Double-clic (ou F2) pour corriger le titre" if editable else "")
 
     @staticmethod
     def set_status(item, status, validated=None):
@@ -257,9 +312,44 @@ class FilmViewer(QMainWindow):
         item.setToolTip("Validé manuellement" if validated else "")
 
     def on_item_changed(self, item):
-        """Coche « Validé » : enregistre la validation et met à jour le statut."""
-        if self.loading or item.column() != COL_CHECK or not item.isCheckable():
+        if self.loading:
             return
+        if item.column() == COL_CHECK and item.isCheckable():
+            self.on_validation(item)
+        elif item.column() == COL_RAW:
+            self.on_title_edited(item)
+
+    def on_title_edited(self, item):
+        """Titre d'un film INTROUVABLE corrigé : mise à jour de la liste."""
+        r = item.row()
+        old = item.data(RAW_ROLE)
+        new = " ".join(item.text().split())
+        if not new or new == old:
+            self.loading = True
+            item.setText(old)  # rien à faire : on remet le titre d'origine
+            self.loading = False
+            return
+        num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
+        try:
+            rename_in_list(self.list_path, num, old, new)
+        except (OSError, ValueError) as e:
+            QMessageBox.critical(self, "Erreur", f"Impossible de corriger le titre :\n{e}")
+            self.reload()
+            return
+        self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
+        e = self.cache.get(new, {})
+        self.loading = True
+        self.fill_row(r, film_row(num, new, e, self.validations))
+        self.loading = False
+        self.fill_status_combo(refilter=False)
+        if e:
+            suite = f"déjà connu : {self.model.item(r, COL_STATUS).text()}"
+        else:
+            suite = "sera recherché au prochain « ./films.sh enrichir »"
+        self.statusBar().showMessage(f"Titre corrigé : « {old} » → « {new} » ({suite})", 8000)
+
+    def on_validation(self, item):
+        """Coche « Validé » : enregistre la validation et met à jour le statut."""
         row = item.row()
         raw = self.model.item(row, COL_RAW).text()
         movie_id = self.model.item(row, COL_ID).data(Qt.ItemDataRole.DisplayRole)
@@ -354,6 +444,22 @@ class FilmViewer(QMainWindow):
             QMessageBox.critical(self, "Erreur", f"Impossible d'écrire {path} :\n{e}")
             return
         self.statusBar().showMessage(f"{len(rows)} film(s) exporté(s) dans {path}", 8000)
+
+    def closeEvent(self, event):
+        """Bouton « Quitter », Ctrl+Q ou croix de la fenêtre : demander confirmation."""
+        box = QMessageBox(QMessageBox.Icon.Question, "Quitter",
+                          "Voulez-vous vraiment quitter ?", parent=self)
+        box.setInformativeText(
+            "Les validations et les corrections de titres sont déjà enregistrées.")
+        quit_btn = box.addButton("Quitter", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)  # Entrée ne quitte pas par mégarde
+        box.setEscapeButton(cancel_btn)
+        box.exec()
+        if box.clickedButton() is quit_btn:
+            event.accept()
+        else:
+            event.ignore()
 
     def choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
