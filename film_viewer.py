@@ -166,26 +166,29 @@ class ChooseFilmDialog(QDialog):
     def __init__(self, raw, candidates, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Plusieurs films portent ce titre")
-        self.resize(560, 360)
+        self.setMinimumWidth(520)
         self.choice = None
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"Plusieurs films correspondent à « {raw} ».\n"
                                 "Choisis le bon (double-clic ou « Choisir ») :"))
         self.list = QListWidget()
+        fm = QFontMetrics(self.list.font())
         for c in candidates:
+            # Titre (année) — réalisateur, puis le résumé sur une seule ligne.
             year = c.get("date", "")[:4] or "année inconnue"
             text = f"{c.get('title') or c.get('original_title')} ({year})"
-            if c.get("original_title") and c["original_title"] != c.get("title"):
-                text += f" — {c['original_title']}"
-            overview = c.get("overview", "")
+            if c.get("director"):
+                text += f" — {c['director']}"
+            overview = " ".join((c.get("overview") or "").split())
             if overview:
-                text += "\n    " + (overview[:110] + "…" if len(overview) > 110 else overview)
+                text += "\n    " + fm.elidedText(overview, Qt.TextElideMode.ElideRight, 460)
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, c["id"])
             item.setToolTip(overview or "Pas de résumé sur TMDB")
             self.list.addItem(item)
         self.list.setCurrentRow(0)
         self.list.itemDoubleClicked.connect(lambda _: self.pick())
+        self.fit_list_height()
         layout.addWidget(self.list)
         buttons = QDialogButtonBox()
         tmdb_btn = buttons.addButton("Voir sur TMDB", QDialogButtonBox.ButtonRole.HelpRole)
@@ -197,6 +200,13 @@ class ChooseFilmDialog(QDialog):
         skip_btn.clicked.connect(self.reject)  # Échap fait de même
         choose_btn.setDefault(True)
         layout.addWidget(buttons)
+        self.adjustSize()  # la fenêtre prend la hauteur de sa liste
+
+    def fit_list_height(self, max_height=420):
+        """Hauteur de la liste = hauteur de ses films (défilement au-delà)."""
+        rows = sum(self.list.sizeHintForRow(i) for i in range(self.list.count()))
+        height = rows + 2 * self.list.frameWidth() + 4
+        self.list.setFixedHeight(min(height, max_height))
 
     def current_id(self):
         item = self.list.currentItem()

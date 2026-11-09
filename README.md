@@ -202,10 +202,11 @@ Quand plusieurs films portent exactement le titre cherché (par exemple
 `OK` d'office :
 
 - dans l'interface (recherche au clic ou **Synchronisation**), une petite
-  fenêtre liste les films possibles avec leur année, leur titre original et
-  un résumé. **Choisir** (ou double-clic) retient le film et le passe en
-  `OK` ; **Voir sur TMDB** ouvre sa fiche ; **Passer** (ou Échap) le laisse
-  `À VÉRIFIER`. La synchronisation attend la réponse avant de continuer ;
+  fenêtre liste les films possibles avec leur année, leur réalisateur et leur
+  résumé sur une ligne. **Choisir** (ou double-clic) retient le film et le
+  passe en `OK` ; **Voir sur TMDB** ouvre sa fiche ; **Passer** (ou Échap) le
+  laisse `À VÉRIFIER`. La synchronisation attend la réponse avant de continuer
+  ;
 - `./films.sh enrichir` ne peut pas poser la question : il retient le premier
   film en `À VÉRIFIER` et garde la liste des homonymes dans le cache.
 

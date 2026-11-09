@@ -249,8 +249,14 @@ def complete(entry):
 
 
 def movie_entry(c):
-    """Champs de cache d'un film (c au format candidate()), avec réalisateur et pays."""
-    director, country = details(c["id"])
+    """Champs de cache d'un film (c au format candidate()), avec réalisateur et pays.
+
+    Si c contient déjà le réalisateur et le pays (homonymes), aucune requête.
+    """
+    if "director" in c and "country" in c:
+        director, country = c["director"], c["country"]
+    else:
+        director, country = details(c["id"])
     return {"id": c["id"], "title": c.get("title", ""),
             "original_title": c.get("original_title", ""), "date": c.get("date", ""),
             "director": director, "country": country}
@@ -264,10 +270,14 @@ def lookup(raw):
     """
     movie, status, candidates = search(raw)
     entry = {"status": status}
-    if movie:
-        entry.update(movie_entry(candidate(movie)))
     if candidates:
+        # Réalisateur (et pays) de chaque homonyme, pour aider à choisir.
+        for c in candidates:
+            c["director"], c["country"] = details(c["id"])
+        entry.update(movie_entry(candidates[0]))
         entry["candidates"] = candidates
+    elif movie:
+        entry.update(movie_entry(candidate(movie)))
     return entry
 
 
