@@ -11,8 +11,12 @@ apparaissent avec le statut « NON TRAITÉ ». L'affichage se met à jour
 automatiquement quand le cache change (pendant un traitement en cours).
 
 Double-clic sur une ligne : ouvre la fiche TMDB du film dans le navigateur.
-Bouton « Exporter… » : enregistre les films affichés (filtre et recherche
-appliqués) en Markdown ou en CSV.
+Bouton « Exporter… » :
+  - « Films affichés… » : enregistre les films affichés (filtre et recherche
+    appliqués) en Markdown ou en CSV ;
+  - « Régénérer les fichiers de résultats » : réécrit liste_film_tmdb.md, le
+    .csv et les listes par statut en y intégrant validations.json, sans
+    interroger TMDB.
 
 Colonne « Validé » : cocher un film « À VÉRIFIER » valide le titre TMDB
 proposé ; il passe en « OK ». Les validations sont enregistrées dans
@@ -34,7 +38,7 @@ from PyQt6.QtCore import (QFileSystemWatcher, QSortFilterProxyModel, Qt,
 from PyQt6.QtGui import (QColor, QDesktopServices, QKeySequence, QShortcut,
                          QStandardItem, QStandardItemModel)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
-                             QHeaderView, QLabel, QLineEdit, QMainWindow,
+                             QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu,
                              QMessageBox, QPushButton, QTableView, QVBoxLayout,
                              QWidget)
 
@@ -223,8 +227,12 @@ class FilmViewer(QMainWindow):
         reload_btn = QPushButton("Recharger")
         reload_btn.clicked.connect(self.reload)
         export_btn = QPushButton("Exporter…")
-        export_btn.setToolTip("Enregistrer les films affichés en Markdown ou en CSV")
-        export_btn.clicked.connect(self.export)
+        export_menu = QMenu(export_btn)
+        export_menu.addAction("Films affichés…", self.export).setToolTip(
+            "Enregistrer les films affichés en Markdown ou en CSV")
+        export_menu.addAction("Régénérer les fichiers de résultats", self.regenerate_files)
+        export_menu.setToolTipsVisible(True)
+        export_btn.setMenu(export_menu)
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Statut :"))
@@ -546,6 +554,21 @@ class FilmViewer(QMainWindow):
             QMessageBox.critical(self, "Erreur", f"Impossible d'écrire {path} :\n{e}")
             return
         self.statusBar().showMessage(f"{len(rows)} film(s) exporté(s) dans {path}", 8000)
+
+    def regenerate_files(self):
+        """Réécrit liste_film_tmdb.md / .csv et les listes par statut avec les validations."""
+        try:
+            written, counts, n_validated = tmdb_export.regenerate(self.list_path)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            QMessageBox.critical(self, "Régénérer les fichiers", f"Impossible de régénérer :\n{e}")
+            return
+        summary = " · ".join(f"{k} : {v}" for k, v in sorted(counts.items()))
+        files = "\n".join(f"  • {os.path.basename(p)}" for p in written)
+        QMessageBox.information(
+            self, "Régénérer les fichiers",
+            f"Fichiers régénérés avec {n_validated} film(s) validé(s) en OK.\n\n"
+            f"{summary}\n\n{files}")
+        self.statusBar().showMessage("Fichiers de résultats régénérés", 8000)
 
     def closeEvent(self, event):
         """Bouton « Quitter », Ctrl+Q ou croix de la fenêtre : demander confirmation."""

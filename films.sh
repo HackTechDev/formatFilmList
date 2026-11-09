@@ -25,6 +25,8 @@ ${GRAS}Commandes :${RAZ}
   config                  enregistre ta clé TMDB dans config.ini
   enrichir [liste.md]     cherche les films sur TMDB (par défaut : liste_film.md)
   interface [liste.md]    ouvre l'interface graphique
+  exporter [liste.md]     régénère liste_film_tmdb.md, le .csv et les listes
+                          par statut avec les validations (sans interroger TMDB)
   test                    essai rapide sur une dizaine de titres (test_films.md)
   vider-cache [liste.md]  supprime le cache TMDB pour relancer toutes les
                           recherches (les validations sont conservées)
@@ -78,6 +80,14 @@ enrichir() {
     info "Enrichissement de $(basename "$f")…"
     cd "$(dirname "$f")"
     python3 "$DIR/tmdb_enrich.py" "$(basename "$f")"
+}
+
+exporter() {
+    verifier_python
+    local f; f="$(liste "${1:-}")"
+    info "Régénération des fichiers de $(basename "$f") avec les validations…"
+    cd "$(dirname "$f")"
+    python3 "$DIR/tmdb_export.py" "$(basename "$f")"
 }
 
 interface() {
@@ -134,6 +144,7 @@ case "$commande" in
     config)                config ;;
     enrichir)              enrichir "$@" ;;
     interface)             interface "$@" ;;
+    exporter)              exporter "$@" ;;
     test)                  test_rapide ;;
     vider-cache)           vider_cache "$@" ;;
     aide|-h|--help|help)   aide ;;

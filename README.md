@@ -62,6 +62,7 @@ python3 tmdb_enrich.py test_films.md
 ./films.sh config                  # enregistre la clé TMDB dans config.ini
 ./films.sh enrichir [liste.md]     # cherche les films sur TMDB
 ./films.sh interface [liste.md]    # ouvre l'interface graphique
+./films.sh exporter [liste.md]     # régénère les résultats avec les validations
 ./films.sh test                    # essai rapide sur test_films.md
 ./films.sh vider-cache [liste.md]  # supprime le cache (avec confirmation)
 ./films.sh aide
@@ -127,8 +128,9 @@ python3 film_viewer.py test_films.md  # une autre liste
 - **recherche** dans les titres et les réalisateurs ;
 - **tri** en cliquant sur l'en-tête d'une colonne ;
 - **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur ;
-- **Exporter…** : enregistre les films affichés (statut et recherche
-  appliqués, dans l'ordre du tri) en Markdown ou en CSV ;
+- **Exporter… → Films affichés…** : enregistre les films affichés (statut et
+  recherche appliqués, dans l'ordre du tri) en Markdown ou en CSV ;
+- **Exporter… → Régénérer les fichiers de résultats** : voir ci-dessous ;
 - **colonne « Validé »** : pour un film `À VÉRIFIER`, cocher la case valide
   le titre TMDB proposé et le film passe en `OK`. La ligne reste affichée
   jusqu'au prochain changement de filtre, ce qui permet de décocher en cas
@@ -157,6 +159,24 @@ la validation ne s'applique plus et le film redevient `À VÉRIFIER`.
 
 L'interface lit la liste et le cache : elle fonctionne même avant la fin du
 traitement, et se met à jour toute seule pendant que `tmdb_enrich.py` tourne.
+
+## Régénérer les résultats avec les validations
+
+`liste_film_tmdb.md`, le `.csv` et les listes par statut sont écrits par
+`./films.sh enrichir`. Les validations faites ensuite dans l'interface n'y
+apparaissent donc pas tout de suite. Pour les y intégrer sans relancer de
+recherche TMDB (ni clé, ni réseau nécessaires) :
+
+```bash
+./films.sh exporter
+```
+
+ou, dans l'interface, **Exporter… → Régénérer les fichiers de résultats**.
+
+Les fichiers sont réécrits à partir de la liste, du cache et de
+`validations.json` : les films validés passent en `OK` (et quittent la liste
+`À VÉRIFIER`), les corrections de titres sont prises en compte, et les titres
+pas encore cherchés apparaissent en `NON TRAITÉ` dans le tableau complet.
 
 ## Cache et reprise
 

@@ -2,12 +2,18 @@
 Écriture des tableaux de films (Markdown et CSV), commune à tmdb_enrich.py
 et film_viewer.py.
 
+En ligne de commande, régénère liste_film_tmdb.md / .csv et les listes par
+statut à partir de la liste, du cache et de validations.json, sans
+interroger TMDB :
+    python3 tmdb_export.py liste_film.md
+
 Une ligne de film est une liste :
     [#, titre (liste), titre TMDB, titre original, date, réalisateur, pays, ID TMDB, statut]
 """
 import csv
 import json
 import os
+import sys
 import unicodedata
 
 HEADER = ["#", "Titre (liste)", "Titre TMDB", "Titre original",
@@ -20,6 +26,8 @@ TMDB_URL = "https://www.themoviedb.org/movie/{}"
 # Films « À VÉRIFIER » validés à la main dans film_viewer.py :
 # {titre de la liste: ID TMDB validé}. Fichier à côté de la liste.
 VALIDATIONS_FILE = "validations.json"
+CACHE_FILE = ".tmdb_cache.json"  # même nom que dans tmdb_enrich.py
+NOT_DONE = "NON TRAITÉ"
 
 
 def validations_path(list_path):
@@ -136,3 +144,55 @@ def default_name(list_path, status=None):
     """liste_film.md -> liste_film_tmdb[_STATUT]"""
     base = os.path.splitext(list_path)[0] + "_tmdb"
     return f"{base}_{status_slug(status)}" if status else base
+
+
+def load_cache(list_path):
+    path = os.path.join(os.path.dirname(os.path.abspath(list_path)), CACHE_FILE)
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_rows(list_path, cache, validations):
+    """Une ligne par titre de la liste ; les films validés passent en OK."""
+    with open(list_path, encoding="utf-8") as f:
+        titles = [l.strip() for l in f if l.strip()]
+    rows = []
+    for i, raw in enumerate(titles, 1):
+        e = cache.get(raw)
+        status = effective_status(raw, e, validations) if e else NOT_DONE
+        e = e or {}
+        rows.append([i, raw, e.get("title", ""), e.get("original_title", ""),
+                     e.get("date", ""), e.get("director", ""), e.get("country", ""),
+                     e.get("id", ""), status])
+    return rows
+
+
+def regenerate(list_path):
+    """Réécrit les fichiers de résultats depuis le cache et validations.json.
+
+    Retourne (fichiers écrits, {statut: nombre}, nombre de films validés).
+    Lève ValueError si aucun film n'a encore été traité.
+    """
+    cache = load_cache(list_path)
+    if not cache:
+        raise ValueError("aucun film traité : lance d'abord « ./films.sh enrichir ».")
+    validations = load_validations(list_path)
+    rows = build_rows(list_path, cache, validations)
+    counts = {}
+    for r in rows:
+        counts[r[I_STATUS]] = counts.get(r[I_STATUS], 0) + 1
+    n_validated = sum(is_validated(r[I_RAW], cache.get(r[I_RAW], {}), validations) for r in rows)
+    return write_all(default_name(list_path), rows), counts, n_validated
+
+
+if __name__ == "__main__":
+    src = sys.argv[1] if len(sys.argv) > 1 else "liste_film.md"
+    try:
+        written, counts, n_validated = regenerate(src)
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        sys.exit(f"Erreur : {e}")
+    print(f"Fichiers régénérés, {n_validated} film(s) validé(s) en OK — {counts}")
+    for path in written:
+        print(f"  {path}")
