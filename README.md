@@ -192,10 +192,24 @@ python3 film_viewer.py test_films.md  # une autre liste
   il est enregistré dans le cache comme si `./films.sh enrichir` l'avait
   trouvé. Nécessite la clé TMDB (`./films.sh config`). Pratique juste après
   avoir corrigé un titre `INTROUVABLE` ;
-- **correction des titres `INTROUVABLE` ou `NON TRAITÉ`** : double-clic
-  (ou F2) sur la cellule « Titre (liste) » pour corriger le titre, puis
-  Entrée. La correction est écrite directement dans la liste
-  (`liste_film.md`) ; le film est (ou reste) `NON TRAITÉ` : un clic sur
+- **choix du film `À VÉRIFIER`** : un clic sur un statut `À VÉRIFIER`
+  (souligné) ouvre la fenêtre de choix du film (voir « Films homonymes ») avec
+  les films possibles, celui retenu en premier. Si le titre a des homonymes
+  connus, la fenêtre s'ouvre tout de suite ; sinon les films possibles sont
+  d'abord cherchés sur TMDB (statut `RECHERCHE…`), puis gardés dans le cache.
+  **Choisir** passe le film en `OK` ; **Passer** le laisse `À VÉRIFIER`. Si
+  TMDB ne propose aucun autre film, corrige le titre ou coche « Validé » ;
+- **recherche d'un film `INTROUVABLE`** : un clic sur un statut
+  `INTROUVABLE` (souligné) ouvre la même fenêtre, qui cherche aussitôt le
+  titre. Comme il n'a rien donné, modifie le texte de recherche (orthographe,
+  titre original, année…) puis Entrée, et choisis le film : il passe en `OK`.
+  Le titre de la liste n'est pas modifié (pour le corriger : double-clic sur
+  le titre) ;
+- **correction des titres `À VÉRIFIER`, `INTROUVABLE` ou `NON TRAITÉ`** :
+  double-clic (ou F2) sur la cellule « Titre (liste) » pour corriger le
+  titre, puis Entrée (sur cette cellule, le double-clic n'ouvre pas la fiche
+  TMDB). La correction est écrite directement dans la liste
+  (`liste_film.md`) ; le film repasse (ou reste) `NON TRAITÉ` : un clic sur
   `NON TRAITÉ` le cherche tout de suite, sinon il sera recherché au prochain
   `./films.sh enrichir`. Si le nouveau titre est déjà dans le cache, son
   statut s'affiche tout de suite. Un titre en cours de recherche
@@ -248,12 +262,17 @@ Quand plusieurs films portent exactement le titre cherché (par exemple
   | Entrée | choisir le film sélectionné |
   | → ou Échap | passer (le film reste `À VÉRIFIER`) |
 
+  Le champ de recherche en haut de la fenêtre permet de chercher un autre
+  texte sur TMDB si le bon film n'est pas proposé : modifie-le puis **Entrée**
+  (Entrée y lance la recherche et ne choisit rien ; → y déplace le curseur),
+  puis **↓** pour descendre dans les résultats.
+
 - `./films.sh enrichir` ne peut pas poser la question : il retient le premier
   film en `À VÉRIFIER` et garde la liste des homonymes dans le cache.
 
 Dans les deux cas, un film `À VÉRIFIER` avec des homonymes se choisit plus tard
-dans l'interface : clic droit sur sa ligne → **Choisir parmi les
-homonymes…**. Ajouter l'année dans la liste (`Carrie 2013`) évite la question.
+dans l'interface : clic sur son statut `À VÉRIFIER` (ou clic droit sur sa ligne
+→ **Choisir parmi les homonymes…**). Ajouter l'année dans la liste (`Carrie 2013`) évite la question.
 
 ## Cache et reprise
 

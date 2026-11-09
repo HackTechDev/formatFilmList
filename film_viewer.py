@@ -24,13 +24,19 @@ s'affiche comme un « OK » normal, sans case ; clic droit sur sa ligne →
 « Annuler la validation » pour revenir en arrière. Les validations sont enregistrées dans
 validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
 
-Films « INTROUVABLE » ou « NON TRAITÉ » : double-clic (ou F2) sur « Titre
-(liste) » pour corriger le titre (pas pendant sa recherche). La correction est
-écrite dans la liste ; le nouveau titre sera cherché au prochain lancement de
-tmdb_enrich.py, ou tout de suite par un clic sur « NON TRAITÉ ».
+Films « À VÉRIFIER », « INTROUVABLE » ou « NON TRAITÉ » : double-clic (ou F2)
+sur « Titre (liste) » pour corriger le titre (pas pendant sa recherche). La
+correction est écrite dans la liste ; le film repasse « NON TRAITÉ » et le
+nouveau titre sera cherché au prochain lancement de tmdb_enrich.py, ou tout
+de suite par un clic sur « NON TRAITÉ ».
 
 Films « NON TRAITÉ » : un clic sur « NON TRAITÉ » cherche tout de suite ce
 titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
+
+Films « À VÉRIFIER » : un clic sur « À VÉRIFIER » ouvre la fenêtre de choix
+du film (homonymes déjà connus, sinon films possibles cherchés sur TMDB).
+Films « INTROUVABLE » : un clic sur « INTROUVABLE » ouvre la même fenêtre et
+y cherche le titre ; le texte de recherche se modifie (puis Entrée).
 
 Homonymes : quand plusieurs films portent exactement le titre cherché (ex.
 « Les Maîtres de l'univers » de 1987 et de 2026), une petite fenêtre propose
@@ -47,7 +53,7 @@ import os
 import sys
 import threading
 
-from PyQt6.QtCore import (QFileSystemWatcher, QSortFilterProxyModel, Qt,
+from PyQt6.QtCore import (QEvent, QFileSystemWatcher, QSortFilterProxyModel, Qt,
                           QThread, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence, QShortcut,
                          QStandardItem, QStandardItemModel)
@@ -63,6 +69,7 @@ import tmdb_export
 CACHE_FILE = ".tmdb_cache.json"  # même nom que dans tmdb_enrich.py
 NOT_DONE = "NON TRAITÉ"
 STATUSES = ["OK", "À VÉRIFIER", "INTROUVABLE", NOT_DONE]
+EDITABLE = ("À VÉRIFIER", "INTROUVABLE", NOT_DONE)  # statuts dont le titre se corrige
 STATUS_COLORS = {
     "OK": QColor("#2e9e44"),
     "À VÉRIFIER": QColor("#d98a00"),
@@ -161,19 +168,91 @@ def store_entries(cache_path, entries):
     os.replace(tmp, cache_path)
 
 
+_search_threads = set()  # recherches encore actives (fenêtre fermée entre-temps)
+
+
+class CandidatesThread(QThread):
+    """Cherche sur TMDB les films possibles pour un texte, hors de l'interface."""
+    done = pyqtSignal(object)   # liste de films (format tmdb_enrich.candidate)
+    failed = pyqtSignal(str)
+
+    def __init__(self, query):
+        super().__init__()
+        self.query = query
+
+    def run(self):
+        try:
+            self.done.emit(tmdb_enrich.add_details(tmdb_enrich.search_candidates(self.query)))
+        except Exception as e:  # réseau, clé…
+            self.failed.emit(f"{type(e).__name__} : {e}")
+
+
 class ChooseFilmDialog(QDialog):
-    """Petite fenêtre pour choisir le bon film parmi des homonymes."""
+    """Petite fenêtre pour choisir le bon film, avec une recherche TMDB libre.
+
+    candidates : films proposés d'emblée (homonymes, films possibles). Vide
+    (film INTROUVABLE) : la recherche du titre est lancée à l'ouverture.
+    Après exec() : choice = ID choisi (ou None), candidates = films affichés.
+    """
 
     def __init__(self, raw, candidates, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Plusieurs films portent ce titre")
-        self.setMinimumWidth(520)
+        self.setWindowTitle("Choisir le film")
+        self.setMinimumWidth(560)
         self.choice = None
+        self.candidates = list(candidates)
+        self.thread = None
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Plusieurs films correspondent à « {raw} ».\n"
-                                "Choisis le bon : ↑/↓ puis Entrée (ou double-clic) ;\n"
-                                "→ pour passer et le vérifier plus tard."))
+        intro = (f"Films possibles pour « {raw} » (le premier est celui retenu)."
+                 if candidates else f"Aucun film retenu pour « {raw} » : cherche-le sur TMDB.")
+        layout.addWidget(QLabel(
+            intro + "\nChoisis le bon : ↑/↓ puis Entrée (ou double-clic) ; → pour passer.\n"
+            "Autre recherche : modifie le texte ci-dessous, puis Entrée."))
+        search_row = QHBoxLayout()
+        self.query = QLineEdit(raw)
+        self.query.setClearButtonEnabled(True)
+        self.query.setPlaceholderText("Titre à chercher sur TMDB (avec l'année si besoin)")
+        self.query.installEventFilter(self)  # Entrée : rechercher ; ↓ : aller à la liste
+        search_btn = QPushButton("Rechercher")
+        search_btn.setAutoDefault(False)
+        search_btn.clicked.connect(self.run_search)
+        search_row.addWidget(self.query, 1)
+        search_row.addWidget(search_btn)
+        layout.addLayout(search_row)
         self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _: self.pick())
+        layout.addWidget(self.list)
+        buttons = QDialogButtonBox()
+        tmdb_btn = buttons.addButton("Voir sur TMDB", QDialogButtonBox.ButtonRole.HelpRole)
+        self.choose_btn = buttons.addButton("Choisir", QDialogButtonBox.ButtonRole.AcceptRole)
+        skip_btn = buttons.addButton("Passer (→)",
+                                     QDialogButtonBox.ButtonRole.RejectRole)
+        tmdb_btn.clicked.connect(self.open_tmdb)
+        self.choose_btn.clicked.connect(self.pick)
+        skip_btn.clicked.connect(self.reject)  # Échap fait de même
+        skip_btn.setToolTip("Ne rien changer pour l'instant (touche → ou Échap)")
+        self.choose_btn.setToolTip("Choisir le film sélectionné (Entrée)")
+        layout.addWidget(buttons)
+        # Entrée = « Choisir ». Le bouton par défaut doit être désigné une fois
+        # rattaché à la fenêtre, sinon Qt prend le premier (« Voir sur TMDB »).
+        tmdb_btn.setAutoDefault(False)
+        skip_btn.setAutoDefault(False)
+        self.choose_btn.setDefault(True)
+        # Clavier : ↑/↓ parcourent la liste, Entrée choisit, → passe (dans le
+        # champ de recherche, → déplace le curseur comme d'habitude).
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=self.reject)
+        if self.candidates:
+            self.fill_list(self.candidates)
+            self.list.setFocus()
+        else:
+            self.query.setFocus()
+            self.query.selectAll()
+            self.run_search()
+        self.adjustSize()  # la fenêtre prend la hauteur de sa liste
+
+    def fill_list(self, candidates, message=""):
+        """Affiche les films ; sans film, une ligne grisée avec le message."""
+        self.list.clear()
         fm = QFontMetrics(self.list.font())
         for c in candidates:
             # Titre (année) — réalisateur, puis le résumé sur une seule ligne.
@@ -183,42 +262,64 @@ class ChooseFilmDialog(QDialog):
                 text += f" — {c['director']}"
             overview = " ".join((c.get("overview") or "").split())
             if overview:
-                text += "\n    " + fm.elidedText(overview, Qt.TextElideMode.ElideRight, 460)
+                text += "\n    " + fm.elidedText(overview, Qt.TextElideMode.ElideRight, 500)
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, c["id"])
             item.setToolTip(overview or "Pas de résumé sur TMDB")
             self.list.addItem(item)
-        self.list.setCurrentRow(0)
-        self.list.itemDoubleClicked.connect(lambda _: self.pick())
+        if not candidates:
+            item = QListWidgetItem(message)
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list.addItem(item)
+        else:
+            self.list.setCurrentRow(0)
+        self.choose_btn.setEnabled(bool(candidates))
         self.fit_list_height()
-        layout.addWidget(self.list)
-        buttons = QDialogButtonBox()
-        tmdb_btn = buttons.addButton("Voir sur TMDB", QDialogButtonBox.ButtonRole.HelpRole)
-        choose_btn = buttons.addButton("Choisir", QDialogButtonBox.ButtonRole.AcceptRole)
-        skip_btn = buttons.addButton("Passer (→)",
-                                     QDialogButtonBox.ButtonRole.RejectRole)
-        tmdb_btn.clicked.connect(self.open_tmdb)
-        choose_btn.clicked.connect(self.pick)
-        skip_btn.clicked.connect(self.reject)  # Échap fait de même
-        skip_btn.setToolTip("Laisser le film « À VÉRIFIER » (touche → ou Échap)")
-        choose_btn.setToolTip("Choisir le film sélectionné (Entrée)")
-        layout.addWidget(buttons)
-        # Entrée = « Choisir ». Le bouton par défaut doit être désigné une fois
-        # rattaché à la fenêtre, sinon Qt prend le premier (« Voir sur TMDB »).
-        tmdb_btn.setAutoDefault(False)
-        skip_btn.setAutoDefault(False)
-        choose_btn.setDefault(True)
-        # Clavier : ↑/↓ parcourent la liste (elle a le focus), Entrée choisit,
-        # → passe.
-        QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=self.reject)
-        self.list.setFocus()
-        self.adjustSize()  # la fenêtre prend la hauteur de sa liste
 
     def fit_list_height(self, max_height=420):
         """Hauteur de la liste = hauteur de ses films (défilement au-delà)."""
         rows = sum(self.list.sizeHintForRow(i) for i in range(self.list.count()))
         height = rows + 2 * self.list.frameWidth() + 4
         self.list.setFixedHeight(min(height, max_height))
+        self.adjustSize()
+
+    def eventFilter(self, obj, event):
+        if obj is self.query and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.run_search()  # et pas « Choisir »
+                return True
+            if event.key() == Qt.Key.Key_Down and self.choose_btn.isEnabled():
+                self.list.setFocus()
+                return True
+        return super().eventFilter(obj, event)
+
+    def run_search(self):
+        query = " ".join(self.query.text().split())
+        if not query or self.thread:
+            return
+        self.fill_list([], f"Recherche de « {query} » sur TMDB…")
+        thread = CandidatesThread(query)
+        _search_threads.add(thread)  # gardé en vie même si la fenêtre se ferme
+        thread.finished.connect(lambda: _search_threads.discard(thread))
+        thread.done.connect(self.on_results)
+        thread.failed.connect(self.on_failed)
+        self.thread = thread
+        thread.start()
+
+    def on_results(self, candidates):
+        self.thread = None
+        if candidates:
+            self.candidates = candidates
+            self.fill_list(candidates)
+            self.list.setFocus()
+        else:
+            self.fill_list([], "Aucun film trouvé — modifie la recherche puis Entrée")
+            self.query.setFocus()
+
+    def on_failed(self, message):
+        self.thread = None
+        self.fill_list([], f"Recherche impossible : {message}")
+        self.query.setFocus()
 
     def current_id(self):
         item = self.list.currentItem()
@@ -229,6 +330,8 @@ class ChooseFilmDialog(QDialog):
             QDesktopServices.openUrl(QUrl(tmdb_export.TMDB_URL.format(self.current_id())))
 
     def pick(self):
+        if self.current_id() is None:
+            return
         self.choice = self.current_id()
         self.accept()
 
@@ -243,7 +346,7 @@ class TmdbThread(QThread):
             return entry
         if self.isInterruptionRequested():
             return entry
-        self._choice, self._answered = None, threading.Event()
+        self._choice, self._candidates, self._answered = None, None, threading.Event()
         self.ambiguous.emit(raw, entry)
         # Attente du choix ; on vérifie régulièrement si l'interface ferme,
         # pour ne jamais rester bloqué sur une question sans réponse.
@@ -252,10 +355,12 @@ class TmdbThread(QThread):
                 return entry
         if self._choice is None:  # « Passer » : reste À VÉRIFIER
             return entry
-        return tmdb_enrich.choose(entry, self._choice)
+        return tmdb_enrich.choose(dict(entry, candidates=self._candidates or entry["candidates"]),
+                                  self._choice)
 
-    def answer(self, choice):
-        self._choice = choice
+    def answer(self, choice, candidates=None):
+        """Choix fait dans la fenêtre, avec les films qu'elle affichait."""
+        self._choice, self._candidates = choice, candidates
         if getattr(self, "_answered", None):
             self._answered.set()
 
@@ -350,7 +455,8 @@ class FilmViewer(QMainWindow):
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        # Seul le titre des films INTROUVABLE ou NON TRAITÉ est modifiable (voir fill_row).
+        # Seul le titre des films À VÉRIFIER, INTROUVABLE ou NON TRAITÉ est
+        # modifiable (voir fill_row et EDITABLE).
         self.table.setEditTriggers(QTableView.EditTrigger.DoubleClicked
                                    | QTableView.EditTrigger.EditKeyPressed)
         self.table.setAlternatingRowColors(True)
@@ -534,14 +640,14 @@ class FilmViewer(QMainWindow):
         items[COL_ID].setToolTip("Double-clic : ouvrir la fiche TMDB" if film[COL_ID] else "")
         raw_item = items[COL_RAW]
         raw_item.setData(film[COL_RAW], RAW_ROLE)
-        editable = (film[COL_STATUS] in ("INTROUVABLE", NOT_DONE)
+        editable = (film[COL_STATUS] in EDITABLE
                     and not self.is_searching(film[COL_RAW]))
         raw_item.setEditable(editable)
         raw_item.setToolTip("Double-clic (ou F2) pour corriger le titre" if editable else "")
         homonyms = self.cache.get(film[COL_RAW], {}).get("candidates")
         if homonyms and film[COL_STATUS] == "À VÉRIFIER":
-            items[COL_STATUS].setToolTip(f"{len(homonyms)} films portent ce titre — "
-                                         "clic droit → « Choisir parmi les homonymes… »")
+            items[COL_STATUS].setToolTip(f"{len(homonyms)} films possibles — "
+                                         "cliquer pour choisir le bon")
         if film[COL_STATUS] == NOT_DONE and self.is_searching(film[COL_RAW]):
             self.set_status(items[COL_STATUS], SEARCHING)
 
@@ -553,7 +659,7 @@ class FilmViewer(QMainWindow):
         """Pas de correction de titre pendant la recherche de ce titre."""
         self.loading = True
         for r in self.rows_of(raw):
-            ok = editable and self.model.item(r, COL_STATUS).text() in ("INTROUVABLE", NOT_DONE)
+            ok = editable and self.model.item(r, COL_STATUS).text() in EDITABLE
             item = self.model.item(r, COL_RAW)
             item.setEditable(ok)
             item.setToolTip("Double-clic (ou F2) pour corriger le titre" if ok else "")
@@ -565,10 +671,14 @@ class FilmViewer(QMainWindow):
         item.setForeground(STATUS_COLORS.get(status, QColor("#888888")))
         font = item.font()
         font.setBold(True)
-        font.setUnderline(status == NOT_DONE)  # cliquable, comme un lien
+        font.setUnderline(status in (NOT_DONE, "À VÉRIFIER", "INTROUVABLE"))  # cliquable
         item.setFont(font)
         if status == NOT_DONE:
             item.setToolTip("Cliquer pour chercher ce film sur TMDB")
+        elif status == "À VÉRIFIER":
+            item.setToolTip("Cliquer pour choisir le bon film")
+        elif status == "INTROUVABLE":
+            item.setToolTip("Cliquer pour chercher le film sur TMDB avec un autre texte")
         else:
             item.setToolTip("Validé manuellement — clic droit pour annuler la validation"
                             if validated else "")
@@ -578,17 +688,36 @@ class FilmViewer(QMainWindow):
                 if self.model.item(r, COL_RAW).data(RAW_ROLE) == raw]
 
     def on_cell_clicked(self, index):
-        """Clic sur « NON TRAITÉ » : recherche immédiate du titre sur TMDB."""
+        """Clic sur le statut : « NON TRAITÉ » cherche le titre sur TMDB,
+        « À VÉRIFIER » et « INTROUVABLE » ouvrent la fenêtre de choix du film."""
         if index.column() != COL_STATUS:
             return
         r = self.proxy.mapToSource(index).row()
-        if self.model.item(r, COL_STATUS).text() != NOT_DONE:
-            return
+        status = self.model.item(r, COL_STATUS).text()
         raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
-        if raw in self.lookups:
+        if raw in self.lookups or self.is_searching(raw):
             return
-        self.start_lookup(raw)
-        self.statusBar().showMessage(f"Recherche de « {raw} » sur TMDB…")
+        if status == NOT_DONE:
+            self.start_lookup(raw)
+            self.statusBar().showMessage(f"Recherche de « {raw} » sur TMDB…")
+        elif status == "À VÉRIFIER":
+            self.choose_film(raw)
+        elif status == "INTROUVABLE":
+            self.choose_homonym(raw)  # sans film proposé : la fenêtre cherche le titre
+
+    def choose_film(self, raw):
+        """Fenêtre de choix pour un film À VÉRIFIER.
+
+        Homonymes déjà dans le cache : la fenêtre s'ouvre tout de suite.
+        Sinon, les films possibles sont cherchés sur TMDB en arrière-plan,
+        puis proposés (et gardés dans le cache pour la fois suivante).
+        """
+        entry = self.cache.get(raw, {})
+        if entry.get("candidates"):
+            self.choose_homonym(raw)
+            return
+        self.start_lookup(raw, job=lambda: tmdb_enrich.with_candidates(entry, raw))
+        self.statusBar().showMessage(f"Recherche des films possibles pour « {raw} »…")
 
     def start_lookup(self, raw, job=None):
         """Lance une recherche (ou un autre travail TMDB) pour ce titre."""
@@ -612,14 +741,18 @@ class FilmViewer(QMainWindow):
         if self.sync is thread:
             self.sync_label.setText(f"Synchronisation : choix en attente pour « {raw} »")
         dialog.exec()
-        thread.answer(dialog.choice)
+        thread.answer(dialog.choice, dialog.candidates)
 
     def choose_homonym(self, raw):
-        """Clic droit → choisir parmi les homonymes gardés dans le cache."""
+        """Fenêtre de choix avec les films gardés dans le cache (homonymes…).
+
+        Sans film gardé (INTROUVABLE), la fenêtre cherche elle-même le titre.
+        """
         entry = self.cache.get(raw, {})
         dialog = ChooseFilmDialog(raw, entry.get("candidates", []), self)
         if dialog.exec() and dialog.choice is not None:
-            self.start_lookup(raw, job=lambda: tmdb_enrich.choose(entry, dialog.choice))
+            chosen = dict(entry, candidates=dialog.candidates)  # après une recherche libre
+            self.start_lookup(raw, job=lambda: tmdb_enrich.choose(chosen, dialog.choice))
             self.statusBar().showMessage(f"« {raw} » : chargement du film choisi…")
 
     def apply_entry(self, raw, entry):
@@ -642,16 +775,24 @@ class FilmViewer(QMainWindow):
         self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
         self.apply_entry(raw, entry)
         status = tmdb_export.effective_status(raw, entry, self.validations)
+        if status == "À VÉRIFIER" and not entry.get("candidates"):
+            self.statusBar().showMessage(
+                f"« {raw} » : TMDB ne propose pas d'autre film — corrige le titre "
+                "(double-clic) ou coche « Validé » si le film proposé est le bon", 10000)
+            return
         self.statusBar().showMessage(
             f"« {raw} » → {tmdb_enrich.found_label(entry)} : {status}", 10000)
 
     def on_lookup_failed(self, raw, message):
         self.lookups.pop(raw, None)
-        self.loading = True
-        for r in self.rows_of(raw):
-            self.set_status(self.model.item(r, COL_STATUS), NOT_DONE)
-        self.loading = False
-        self.set_title_editable(raw, True)
+        if raw in self.cache:  # ex. À VÉRIFIER : on remet le film tel qu'il était
+            self.apply_entry(raw, self.cache[raw])
+        else:
+            self.loading = True
+            for r in self.rows_of(raw):
+                self.set_status(self.model.item(r, COL_STATUS), NOT_DONE)
+            self.loading = False
+            self.set_title_editable(raw, True)
         self.statusBar().clearMessage()
         QMessageBox.warning(self, "Recherche TMDB",
                             f"Impossible de chercher « {raw} » :\n{message}")
@@ -665,7 +806,7 @@ class FilmViewer(QMainWindow):
             self.on_title_edited(item)
 
     def on_title_edited(self, item):
-        """Titre d'un film INTROUVABLE ou NON TRAITÉ corrigé : mise à jour de la liste."""
+        """Titre d'un film À VÉRIFIER, INTROUVABLE ou NON TRAITÉ corrigé : mise à jour de la liste."""
         r = item.row()
         old = item.data(RAW_ROLE)
         new = " ".join(item.text().split())
@@ -719,6 +860,7 @@ class FilmViewer(QMainWindow):
             return
         status = "OK" if validated else "À VÉRIFIER"
         self.set_status(self.model.item(row, COL_STATUS), status, validated)
+        self.set_title_editable(raw, True)  # selon le nouveau statut (OK : non modifiable)
         self.fill_status_combo(refilter=False)
         title = self.model.item(row, COL_TITLES[1]).text()
         self.statusBar().showMessage(
@@ -791,6 +933,8 @@ class FilmViewer(QMainWindow):
 
     def open_tmdb(self, index):
         src = self.proxy.mapToSource(index)
+        if self.model.itemFromIndex(src).isEditable():
+            return  # double-clic sur un titre modifiable : correction, pas la fiche
         movie_id = self.model.item(src.row(), COL_ID).text()
         if movie_id:
             QDesktopServices.openUrl(QUrl(f"https://www.themoviedb.org/movie/{movie_id}"))

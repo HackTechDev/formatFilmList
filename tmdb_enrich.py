@@ -281,6 +281,57 @@ def lookup(raw):
     return entry
 
 
+def search_candidates(query, limit=8):
+    """Films possibles pour un texte de recherche (format candidate()).
+
+    Toutes les variantes du texte (voir query_variants) sont essayées, sans
+    doublon, jusqu'à `limit` films. Sans réalisateur ni pays : voir add_details.
+    """
+    seen, cands = set(), []
+    for q, year in query_variants(query):
+        params = {"query": q, "language": LANG, "include_adult": "true"}
+        if year:
+            params["primary_release_year"] = year
+        for r in api_get("/search/movie", **params).get("results", []):
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                cands.append(candidate(r))
+        if len(cands) >= limit:
+            break
+    return cands[:limit]
+
+
+def add_details(cands):
+    """Ajoute réalisateur et pays à chaque film possible (pour aider à choisir)."""
+    for c in cands:
+        if "director" not in c:
+            c["director"], c["country"] = details(c["id"])
+    return cands
+
+
+def with_candidates(entry, raw, limit=8):
+    """Entrée « À VÉRIFIER » complétée par les films possibles pour ce titre.
+
+    Utilisé par l'interface pour proposer un choix même quand le titre n'a
+    pas d'homonyme exact : jusqu'à `limit` résultats TMDB, le film
+    actuellement retenu en premier.
+    """
+    cands = search_candidates(raw, limit)
+    current = entry.get("id")
+    if current:
+        found = next((c for c in cands if c["id"] == current), {})
+        cands = [c for c in cands if c["id"] != current]
+        cands.insert(0, {"id": current, "title": entry.get("title", ""),
+                         "original_title": entry.get("original_title", ""),
+                         "date": entry.get("date", ""), "overview": found.get("overview", ""),
+                         "director": entry.get("director", ""),
+                         "country": entry.get("country", "")})
+    cands = cands[:limit]
+    if len(cands) < 2:  # rien d'autre à proposer
+        return entry
+    return dict(entry, candidates=add_details(cands))
+
+
 def choose(entry, movie_id):
     """Entrée de cache après le choix d'un des homonymes : statut OK."""
     if movie_id == entry.get("id"):  # le film déjà retenu : rien à recharger
