@@ -13,3 +13,9 @@ config.ini
 
 # Notes locales
 claude_task.md
+
+# Résultats générés par tmdb_enrich.py (liste_film_tmdb.md, .csv, par statut…)
+*_tmdb.md
+*_tmdb.csv
+*_tmdb_*.md
+*_tmdb_*.csv
