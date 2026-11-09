@@ -63,6 +63,10 @@ socket.getaddrinfo = _getaddrinfo_ipv4_first
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
 
 
+class TmdbError(Exception):
+    """Erreur à montrer telle quelle (clé absente ou refusée…)."""
+
+
 def load_key():
     """Clé TMDB : variable TMDB_API_KEY, sinon [tmdb] api_key dans config.ini."""
     key = os.environ.get("TMDB_API_KEY", "").strip()
@@ -73,16 +77,23 @@ def load_key():
         try:
             config.read(CONFIG_FILE, encoding="utf-8")
         except configparser.Error as e:
-            sys.exit(f"{CONFIG_FILE} illisible : {e}")
+            raise TmdbError(f"{CONFIG_FILE} illisible : {e}")
         key = config.get("tmdb", "api_key", fallback="").strip().strip("\"'")
         if key:
             return key
-    sys.exit("Clé TMDB absente. Lance « ./films.sh config », ou copie\n"
+    raise TmdbError("Clé TMDB absente. Lance « ./films.sh config », ou copie\n"
              f"config.ini.example en {CONFIG_FILE} et renseigne api_key.")
 
 
-KEY = load_key()
-USE_BEARER = KEY.startswith("eyJ")  # jeton v4 = JWT
+_KEY = None
+
+
+def get_key():
+    """Clé chargée à la première requête (l'import du module n'en a pas besoin)."""
+    global _KEY
+    if _KEY is None:
+        _KEY = load_key()
+    return _KEY
 
 # Suffixes d'édition à retirer pour la recherche
 EDITION_RE = re.compile(
@@ -94,12 +105,14 @@ YEAR_RE = re.compile(r"[\s:]((?:19|20)\d\d)\s*$")
 
 
 def api_get(path, **params):
-    if not USE_BEARER:
-        params["api_key"] = KEY
+    key = get_key()
+    use_bearer = key.startswith("eyJ")  # jeton v4 = JWT
+    if not use_bearer:
+        params["api_key"] = key
     url = f"{API}{path}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    if USE_BEARER:
-        req.add_header("Authorization", f"Bearer {KEY}")
+    if use_bearer:
+        req.add_header("Authorization", f"Bearer {key}")
     last_err = None
     for attempt in range(5):
         try:
@@ -108,7 +121,7 @@ def api_get(path, **params):
                 return json.load(r)
         except urllib.error.HTTPError as e:
             if e.code == 401:
-                sys.exit("Clé TMDB refusée (401).")
+                raise TmdbError("Clé TMDB refusée (401).")
             if e.code != 429 and e.code < 500:  # 429 = rate limit, 5xx = serveur
                 raise
             last_err = e
@@ -185,6 +198,21 @@ def directors(movie_id):
     return ", ".join(dict.fromkeys(names))
 
 
+def lookup(raw):
+    """Cherche un titre sur TMDB et retourne son entrée de cache."""
+    movie, status = search(raw)
+    entry = {"status": status}
+    if movie:
+        entry.update(
+            id=movie["id"],
+            title=movie.get("title", ""),
+            original_title=movie.get("original_title", ""),
+            date=movie.get("release_date", ""),
+            director=directors(movie["id"]),
+        )
+    return entry
+
+
 def found_label(e):
     """Titre TMDB retenu, avec l'année et le titre original s'il diffère."""
     if not e.get("id"):
@@ -207,6 +235,7 @@ def save_cache(cache):
 
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "liste_film.md"
+    get_key()  # clé absente : arrêt immédiat, avant de lire quoi que ce soit
     with open(src, encoding="utf-8") as f:
         titles = [l.strip() for l in f if l.strip()]
     cache = {}
@@ -220,17 +249,7 @@ def main():
     try:
         for i, raw in enumerate(titles, 1):
             if raw not in cache:
-                movie, status = search(raw)
-                entry = {"status": status}
-                if movie:
-                    entry.update(
-                        id=movie["id"],
-                        title=movie.get("title", ""),
-                        original_title=movie.get("original_title", ""),
-                        date=movie.get("release_date", ""),
-                        director=directors(movie["id"]),
-                    )
-                cache[raw] = entry
+                cache[raw] = lookup(raw)
                 new += 1
                 if new % 25 == 0:
                     save_cache(cache)
@@ -259,4 +278,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except TmdbError as e:
+        sys.exit(str(e))

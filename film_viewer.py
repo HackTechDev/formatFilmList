@@ -21,13 +21,16 @@ validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
 Films « INTROUVABLE » : double-clic (ou F2) sur « Titre (liste) » pour
 corriger le titre. La correction est écrite dans la liste ; le nouveau titre
 sera cherché au prochain lancement de tmdb_enrich.py.
+
+Films « NON TRAITÉ » : un clic sur « NON TRAITÉ » cherche tout de suite ce
+titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
 """
 import json
 import os
 import sys
 
 from PyQt6.QtCore import (QFileSystemWatcher, QSortFilterProxyModel, Qt,
-                          QTimer, QUrl)
+                          QThread, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QKeySequence, QShortcut,
                          QStandardItem, QStandardItemModel)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
@@ -35,6 +38,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
                              QMessageBox, QPushButton, QTableView, QVBoxLayout,
                              QWidget)
 
+import tmdb_enrich
 import tmdb_export
 
 CACHE_FILE = ".tmdb_cache.json"  # même nom que dans tmdb_enrich.py
@@ -45,7 +49,9 @@ STATUS_COLORS = {
     "À VÉRIFIER": QColor("#d98a00"),
     "INTROUVABLE": QColor("#d43c3c"),
     NOT_DONE: QColor("#888888"),
+    "RECHERCHE…": QColor("#2f6fd6"),
 }
+SEARCHING = "RECHERCHE…"
 COLUMNS = ["#", "Statut", "Validé", "Titre (liste)", "Titre TMDB", "Titre original",
            "Date de sortie", "Réalisateur", "ID TMDB"]
 COL_STATUS = COLUMNS.index("Statut")
@@ -115,6 +121,40 @@ def load_films(list_path):
     return films, cache_path, validations, cache
 
 
+def store_in_cache(cache_path, raw, entry):
+    """Ajoute une entrée au cache sur disque (relu juste avant, écrit d'un coup)."""
+    cache = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cache = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+    cache[raw] = entry
+    tmp = cache_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False)
+    os.replace(tmp, cache_path)
+
+
+class LookupThread(QThread):
+    """Recherche TMDB d'un titre, hors du fil de l'interface."""
+    found = pyqtSignal(str, object)   # titre, entrée de cache
+    failed = pyqtSignal(str, str)     # titre, message d'erreur
+
+    def __init__(self, raw, parent):
+        super().__init__(parent)
+        self.raw = raw
+
+    def run(self):
+        try:
+            self.found.emit(self.raw, tmdb_enrich.lookup(self.raw))
+        except tmdb_enrich.TmdbError as e:
+            self.failed.emit(self.raw, str(e))
+        except Exception as e:  # réseau, réponse inattendue…
+            self.failed.emit(self.raw, f"{type(e).__name__} : {e}")
+
+
 class FilmFilter(QSortFilterProxyModel):
     """Filtre par statut et par texte (titres et réalisateur)."""
 
@@ -166,6 +206,7 @@ class FilmViewer(QMainWindow):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
         self.table.doubleClicked.connect(self.open_tmdb)
+        self.table.clicked.connect(self.on_cell_clicked)
 
         self.status_combo = QComboBox()
         self.status_combo.currentIndexChanged.connect(self.on_status_filter)
@@ -203,6 +244,8 @@ class FilmViewer(QMainWindow):
         self.loading = False
         self.validations = {}
         self.cache = {}
+        self.cache_path = ""
+        self.lookups = {}  # titre -> LookupThread en cours
         self.stamp = None
         self.model.itemChanged.connect(self.on_item_changed)
 
@@ -252,6 +295,7 @@ class FilmViewer(QMainWindow):
         except OSError as e:
             QMessageBox.critical(self, "Erreur", f"Impossible de lire {self.list_path} :\n{e}")
             return
+        self.cache_path = cache_path
         self.watch(cache_path)
         self.setWindowTitle(f"Films TMDB — {os.path.basename(self.list_path)}")
 
@@ -301,6 +345,8 @@ class FilmViewer(QMainWindow):
         editable = film[COL_STATUS] == "INTROUVABLE"
         raw_item.setEditable(editable)
         raw_item.setToolTip("Double-clic (ou F2) pour corriger le titre" if editable else "")
+        if film[COL_STATUS] == NOT_DONE and film[COL_RAW] in self.lookups:
+            self.set_status(items[COL_STATUS], SEARCHING)
 
     @staticmethod
     def set_status(item, status, validated=None):
@@ -308,8 +354,64 @@ class FilmViewer(QMainWindow):
         item.setForeground(STATUS_COLORS.get(status, QColor("#888888")))
         font = item.font()
         font.setBold(True)
+        font.setUnderline(status == NOT_DONE)  # cliquable, comme un lien
         item.setFont(font)
-        item.setToolTip("Validé manuellement" if validated else "")
+        if status == NOT_DONE:
+            item.setToolTip("Cliquer pour chercher ce film sur TMDB")
+        else:
+            item.setToolTip("Validé manuellement" if validated else "")
+
+    def rows_of(self, raw):
+        return [r for r in range(self.model.rowCount())
+                if self.model.item(r, COL_RAW).data(RAW_ROLE) == raw]
+
+    def on_cell_clicked(self, index):
+        """Clic sur « NON TRAITÉ » : recherche immédiate du titre sur TMDB."""
+        if index.column() != COL_STATUS:
+            return
+        r = self.proxy.mapToSource(index).row()
+        if self.model.item(r, COL_STATUS).text() != NOT_DONE:
+            return
+        raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
+        if raw in self.lookups:
+            return
+        thread = LookupThread(raw, self)
+        thread.found.connect(self.on_lookup_found)
+        thread.failed.connect(self.on_lookup_failed)
+        thread.finished.connect(lambda raw=raw: self.lookups.pop(raw, None))
+        self.lookups[raw] = thread
+        self.loading = True
+        for row in self.rows_of(raw):
+            self.set_status(self.model.item(row, COL_STATUS), SEARCHING)
+        self.loading = False
+        self.statusBar().showMessage(f"Recherche de « {raw} » sur TMDB…")
+        thread.start()
+
+    def on_lookup_found(self, raw, entry):
+        try:
+            store_in_cache(self.cache_path, raw, entry)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur", f"Impossible d'écrire le cache :\n{e}")
+        self.cache[raw] = entry
+        self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
+        self.loading = True
+        for r in self.rows_of(raw):
+            num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
+            self.fill_row(r, film_row(num, raw, entry, self.validations))
+        self.loading = False
+        self.fill_status_combo(refilter=False)
+        status = tmdb_export.effective_status(raw, entry, self.validations)
+        self.statusBar().showMessage(
+            f"« {raw} » → {tmdb_enrich.found_label(entry)} : {status}", 10000)
+
+    def on_lookup_failed(self, raw, message):
+        self.loading = True
+        for r in self.rows_of(raw):
+            self.set_status(self.model.item(r, COL_STATUS), NOT_DONE)
+        self.loading = False
+        self.statusBar().clearMessage()
+        QMessageBox.warning(self, "Recherche TMDB",
+                            f"Impossible de chercher « {raw} » :\n{message}")
 
     def on_item_changed(self, item):
         if self.loading:
@@ -457,6 +559,8 @@ class FilmViewer(QMainWindow):
         box.setEscapeButton(cancel_btn)
         box.exec()
         if box.clickedButton() is quit_btn:
+            for thread in list(self.lookups.values()):
+                thread.wait()  # laisser finir les recherches en cours
             event.accept()
         else:
             event.ignore()

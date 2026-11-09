@@ -131,6 +131,12 @@ python3 film_viewer.py test_films.md  # une autre liste
 
 - **Quitter** (ou Ctrl+Q, ou la croix de la fenêtre) : une petite fenêtre
   demande de confirmer avant de fermer ;
+- **recherche immédiate** : un clic sur un statut `NON TRAITÉ` (souligné)
+  cherche tout de suite ce titre sur TMDB, sans relancer tout le traitement.
+  Le statut affiche `RECHERCHE…` le temps de la requête, puis le résultat ;
+  il est enregistré dans le cache comme si `./films.sh enrichir` l'avait
+  trouvé. Nécessite la clé TMDB (`./films.sh config`). Pratique juste après
+  avoir corrigé un titre `INTROUVABLE` ;
 - **correction des titres `INTROUVABLE`** : double-clic (ou F2) sur la
   cellule « Titre (liste) » pour corriger le titre, puis Entrée. La correction
   est écrite directement dans la liste (`liste_film.md`) ; le film passe en
