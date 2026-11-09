@@ -145,6 +145,14 @@ python3 film_viewer.py test_films.md  # une autre liste
 
 - **Quitter** (ou Ctrl+Q, ou la croix de la fenêtre) : une petite fenêtre
   demande de confirmer avant de fermer ;
+- **Synchronisation** : cherche sur TMDB tous les titres encore `NON TRAITÉ`
+  (après confirmation, avec le nombre de titres et une durée estimée). La
+  recherche se fait en arrière-plan avec une barre de progression ; le bouton
+  devient « Arrêter la synchronisation » pour l'interrompre. Les résultats
+  sont enregistrés dans le cache au fur et à mesure (rien n'est perdu en cas
+  d'arrêt ou de fermeture), puis les fichiers de résultats sont régénérés.
+  Un titre en erreur réseau reste `NON TRAITÉ` ; une clé refusée arrête tout.
+  Revient au même que `./films.sh enrichir`, sans quitter l'interface ;
 - **recherche immédiate** : un clic sur un statut `NON TRAITÉ` (souligné)
   cherche tout de suite ce titre sur TMDB, sans relancer tout le traitement.
   Le statut affiche `RECHERCHE…` le temps de la requête, puis le résultat ;

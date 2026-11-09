@@ -30,6 +30,10 @@ sera cherché au prochain lancement de tmdb_enrich.py.
 
 Films « NON TRAITÉ » : un clic sur « NON TRAITÉ » cherche tout de suite ce
 titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
+
+Bouton « Synchronisation » : cherche sur TMDB tous les titres encore « NON
+TRAITÉ », en arrière-plan avec une barre de progression (bouton « Arrêter »
+pour interrompre), puis régénère les fichiers de résultats.
 """
 import json
 import os
@@ -37,12 +41,12 @@ import sys
 
 from PyQt6.QtCore import (QFileSystemWatcher, QSortFilterProxyModel, Qt,
                           QThread, QTimer, QUrl, pyqtSignal)
-from PyQt6.QtGui import (QColor, QDesktopServices, QKeySequence, QShortcut,
+from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence, QShortcut,
                          QStandardItem, QStandardItemModel)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout,
                              QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu,
-                             QMessageBox, QPushButton, QTableView, QVBoxLayout,
-                             QWidget)
+                             QMessageBox, QProgressBar, QPushButton, QTableView,
+                             QVBoxLayout, QWidget)
 
 import tmdb_enrich
 import tmdb_export
@@ -128,7 +132,11 @@ def load_films(list_path):
 
 
 def store_in_cache(cache_path, raw, entry):
-    """Ajoute une entrée au cache sur disque (relu juste avant, écrit d'un coup)."""
+    store_entries(cache_path, {raw: entry})
+
+
+def store_entries(cache_path, entries):
+    """Ajoute des entrées au cache sur disque (relu juste avant, écrit d'un coup)."""
     cache = {}
     if os.path.exists(cache_path):
         try:
@@ -136,7 +144,7 @@ def store_in_cache(cache_path, raw, entry):
                 cache = json.load(f)
         except (OSError, json.JSONDecodeError):
             pass
-    cache[raw] = entry
+    cache.update(entries)
     tmp = cache_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False)
@@ -159,6 +167,35 @@ class LookupThread(QThread):
             self.failed.emit(self.raw, str(e))
         except Exception as e:  # réseau, réponse inattendue…
             self.failed.emit(self.raw, f"{type(e).__name__} : {e}")
+
+
+class SyncThread(QThread):
+    """Recherche TMDB de plusieurs titres à la suite, interruptible."""
+    progress = pyqtSignal(int, int, str)   # titres faits, total, titre en cours
+    found = pyqtSignal(str, object)        # titre, entrée de cache
+    title_failed = pyqtSignal(str, str)    # titre, erreur (on passe au suivant)
+    fatal = pyqtSignal(str)                # erreur bloquante (clé…) : arrêt
+
+    def __init__(self, titles, parent):
+        super().__init__(parent)
+        self.titles = titles
+
+    def run(self):
+        total = len(self.titles)
+        for i, raw in enumerate(self.titles):
+            if self.isInterruptionRequested():
+                return
+            self.progress.emit(i, total, raw)
+            try:
+                entry = tmdb_enrich.lookup(raw)
+            except tmdb_enrich.TmdbError as e:
+                self.fatal.emit(str(e))
+                return
+            except Exception as e:  # réseau… : ce titre reste NON TRAITÉ
+                self.title_failed.emit(raw, f"{type(e).__name__} : {e}")
+                continue
+            self.found.emit(raw, entry)
+        self.progress.emit(total, total, "")
 
 
 class FilmFilter(QSortFilterProxyModel):
@@ -230,6 +267,9 @@ class FilmViewer(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Quit, self, activated=self.close)
         reload_btn = QPushButton("Recharger")
         reload_btn.clicked.connect(self.reload)
+        self.sync_btn = QPushButton("Synchronisation")
+        self.sync_btn.setToolTip("Chercher sur TMDB tous les titres pas encore traités")
+        self.sync_btn.clicked.connect(self.toggle_sync)
         export_btn = QPushButton("Exporter…")
         export_menu = QMenu(export_btn)
         export_menu.addAction("Films affichés…", self.export).setToolTip(
@@ -243,6 +283,7 @@ class FilmViewer(QMainWindow):
         bar.addWidget(self.status_combo)
         bar.addWidget(self.search, 1)
         bar.addWidget(reload_btn)
+        bar.addWidget(self.sync_btn)
         bar.addWidget(export_btn)
         bar.addWidget(open_btn)
         bar.addWidget(quit_btn)
@@ -258,6 +299,16 @@ class FilmViewer(QMainWindow):
         self.cache = {}
         self.cache_path = ""
         self.lookups = {}  # titre -> LookupThread en cours
+        self.sync = None          # SyncThread en cours
+        self.sync_current = None  # titre en cours de synchronisation
+        self.pending = {}         # résultats pas encore écrits dans le cache
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(250)
+        self.progress.setFormat("%v / %m")  # « 13 / 1411 » plutôt que « 0 % »
+        self.progress.hide()
+        self.sync_label = QLabel()
+        self.statusBar().addPermanentWidget(self.sync_label)
+        self.statusBar().addPermanentWidget(self.progress)
         self.stamp = None
         self.model.itemChanged.connect(self.on_item_changed)
 
@@ -279,6 +330,12 @@ class FilmViewer(QMainWindow):
         self.table.resizeColumnsToContents()
         for col in COL_TITLES:  # titres : largeur raisonnable
             self.table.setColumnWidth(col, min(self.table.columnWidth(col), 300))
+        # Statut : assez large pour tous les statuts, même absents au départ.
+        font = self.table.font()
+        font.setBold(True)
+        fm = QFontMetrics(font)
+        widest = max(fm.horizontalAdvance(s) for s in STATUSES + [SEARCHING])
+        self.table.setColumnWidth(COL_STATUS, max(self.table.columnWidth(COL_STATUS), widest + 20))
 
     def files_stamp(self):
         """Dates de modification de la liste et du cache."""
@@ -302,6 +359,7 @@ class FilmViewer(QMainWindow):
         self.watcher.addPaths(paths)
 
     def reload(self):
+        self.flush_pending()  # résultats de synchronisation pas encore écrits
         try:
             films, cache_path, self.validations, self.cache = load_films(self.list_path)
         except OSError as e:
@@ -361,7 +419,8 @@ class FilmViewer(QMainWindow):
         editable = film[COL_STATUS] == "INTROUVABLE"
         raw_item.setEditable(editable)
         raw_item.setToolTip("Double-clic (ou F2) pour corriger le titre" if editable else "")
-        if film[COL_STATUS] == NOT_DONE and film[COL_RAW] in self.lookups:
+        if film[COL_STATUS] == NOT_DONE and (film[COL_RAW] in self.lookups
+                                             or film[COL_RAW] == self.sync_current):
             self.set_status(items[COL_STATUS], SEARCHING)
 
     @staticmethod
@@ -404,19 +463,23 @@ class FilmViewer(QMainWindow):
         self.statusBar().showMessage(f"Recherche de « {raw} » sur TMDB…")
         thread.start()
 
-    def on_lookup_found(self, raw, entry):
-        try:
-            store_in_cache(self.cache_path, raw, entry)
-        except OSError as e:
-            QMessageBox.critical(self, "Erreur", f"Impossible d'écrire le cache :\n{e}")
+    def apply_entry(self, raw, entry):
+        """Affiche le résultat TMDB d'un titre sur toutes ses lignes."""
         self.cache[raw] = entry
-        self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
         self.loading = True
         for r in self.rows_of(raw):
             num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
             self.fill_row(r, film_row(num, raw, entry, self.validations))
         self.loading = False
         self.fill_status_combo(refilter=False)
+
+    def on_lookup_found(self, raw, entry):
+        try:
+            store_in_cache(self.cache_path, raw, entry)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur", f"Impossible d'écrire le cache :\n{e}")
+        self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
+        self.apply_entry(raw, entry)
         status = tmdb_export.effective_status(raw, entry, self.validations)
         self.statusBar().showMessage(
             f"« {raw} » → {tmdb_enrich.found_label(entry)} : {status}", 10000)
@@ -610,20 +673,160 @@ class FilmViewer(QMainWindow):
             f"{summary}\n\n{files}")
         self.statusBar().showMessage("Fichiers de résultats régénérés", 8000)
 
+    # --- Synchronisation -------------------------------------------------
+
+    def titles_to_sync(self):
+        """Titres NON TRAITÉ (sans doublon, dans l'ordre de la liste)."""
+        titles = []
+        for r in range(self.model.rowCount()):
+            raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
+            if (raw not in self.cache and raw not in self.lookups
+                    and raw not in titles):
+                titles.append(raw)
+        return titles
+
+    def toggle_sync(self):
+        if self.sync:  # déjà en cours : arrêter
+            self.sync_stopped = True  # (Qt l'oublie une fois le fil terminé)
+            self.sync.requestInterruption()
+            self.sync_btn.setEnabled(False)
+            self.sync_btn.setText("Arrêt en cours…")
+            return
+        titles = self.titles_to_sync()
+        if not titles:
+            QMessageBox.information(self, "Synchronisation",
+                                    "Tous les titres de la liste ont déjà été cherchés sur TMDB.")
+            return
+        minutes = max(1, round(len(titles) * 0.5 / 60))
+        box = QMessageBox(QMessageBox.Icon.Question, "Synchronisation",
+                          f"Chercher {len(titles)} titre(s) sur TMDB ?", parent=self)
+        box.setInformativeText(
+            f"Durée estimée : environ {minutes} min. L'interface reste utilisable "
+            "et la synchronisation peut être arrêtée à tout moment ; les films "
+            "déjà trouvés sont conservés.")
+        go_btn = box.addButton("Lancer", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(go_btn)
+        box.setEscapeButton(cancel_btn)
+        box.exec()
+        if box.clickedButton() is not go_btn:
+            return
+        self.sync_stats, self.sync_errors, self.sync_fatal = {}, [], None
+        self.sync_done = 0
+        self.sync_stopped = False
+        self.sync = SyncThread(titles, self)
+        self.sync.progress.connect(self.on_sync_progress)
+        self.sync.found.connect(self.on_sync_found)
+        self.sync.title_failed.connect(self.on_sync_title_failed)
+        self.sync.fatal.connect(self.on_sync_fatal)
+        self.sync.finished.connect(self.on_sync_finished)
+        self.sync_btn.setText("Arrêter la synchronisation")
+        self.progress.setRange(0, len(titles))
+        self.progress.setValue(0)
+        self.progress.show()
+        self.sync.start()
+
+    def set_searching(self, raw, searching):
+        self.loading = True
+        for r in self.rows_of(raw):
+            if self.model.item(r, COL_STATUS).text() in (NOT_DONE, SEARCHING):
+                self.set_status(self.model.item(r, COL_STATUS),
+                                SEARCHING if searching else NOT_DONE)
+        self.loading = False
+
+    def on_sync_progress(self, done, total, raw):
+        self.sync_done = done
+        self.progress.setValue(done)
+        self.sync_current = raw or None
+        self.sync_label.setText(f"Synchronisation : {done}/{total}"
+                                + (f" — {raw}" if raw else ""))
+        if raw:
+            self.set_searching(raw, True)
+
+    def on_sync_found(self, raw, entry):
+        self.pending[raw] = entry
+        self.apply_entry(raw, entry)
+        status = tmdb_export.effective_status(raw, entry, self.validations)
+        self.sync_stats[status] = self.sync_stats.get(status, 0) + 1
+        if len(self.pending) >= 10:
+            self.flush_pending()
+
+    def on_sync_title_failed(self, raw, message):
+        self.sync_errors.append((raw, message))
+        self.set_searching(raw, False)
+
+    def on_sync_fatal(self, message):
+        self.sync_fatal = message
+        if self.sync_current:
+            self.set_searching(self.sync_current, False)
+
+    def flush_pending(self):
+        """Écrit dans le cache les résultats de synchronisation en attente."""
+        if not getattr(self, "pending", None):
+            return
+        try:
+            store_entries(self.cache_path, self.pending)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur", f"Impossible d'écrire le cache :\n{e}")
+            return
+        self.pending.clear()
+        self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
+
+    def on_sync_finished(self):
+        interrupted = self.sync_stopped
+        total = len(self.sync.titles)
+        self.sync = None
+        if self.sync_current:
+            self.set_searching(self.sync_current, False)
+        self.sync_current = None
+        self.flush_pending()
+        self.progress.hide()
+        self.sync_label.clear()
+        self.sync_btn.setText("Synchronisation")
+        self.sync_btn.setEnabled(True)
+        if self.sync_fatal:
+            QMessageBox.warning(self, "Synchronisation",
+                                f"Synchronisation interrompue :\n{self.sync_fatal}")
+            return
+        found = sum(self.sync_stats.values())
+        lines = [f"{'Synchronisation arrêtée' if interrupted else 'Synchronisation terminée'} : "
+                 f"{found} titre(s) cherché(s) sur {total}."]
+        if self.sync_stats:
+            lines.append(" · ".join(f"{k} : {v}" for k, v in sorted(self.sync_stats.items())))
+        if self.sync_errors:
+            lines.append(f"{len(self.sync_errors)} titre(s) en erreur, restés NON TRAITÉ "
+                         f"(ex. « {self.sync_errors[0][0]} » : {self.sync_errors[0][1]}).")
+        if found:
+            try:
+                tmdb_export.regenerate(self.list_path)
+                lines.append("Les fichiers de résultats ont été régénérés.")
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                lines.append(f"Fichiers de résultats non régénérés : {e}")
+        QMessageBox.information(self, "Synchronisation", "\n\n".join(lines))
+
     def closeEvent(self, event):
         """Bouton « Quitter », Ctrl+Q ou croix de la fenêtre : demander confirmation."""
         box = QMessageBox(QMessageBox.Icon.Question, "Quitter",
                           "Voulez-vous vraiment quitter ?", parent=self)
-        box.setInformativeText(
-            "Les validations et les corrections de titres sont déjà enregistrées.")
+        info = "Les validations et les corrections de titres sont déjà enregistrées."
+        if self.sync:
+            info += ("\n\nLa synchronisation en cours sera arrêtée ; les films déjà "
+                     "trouvés sont conservés.")
+        box.setInformativeText(info)
         quit_btn = box.addButton("Quitter", QMessageBox.ButtonRole.AcceptRole)
         cancel_btn = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(cancel_btn)  # Entrée ne quitte pas par mégarde
         box.setEscapeButton(cancel_btn)
         box.exec()
         if box.clickedButton() is quit_btn:
+            if self.sync:
+                self.sync.finished.disconnect()   # pas de bilan à la fermeture
+                self.sync.requestInterruption()
+                self.sync.wait()                  # le titre en cours se termine
             for thread in list(self.lookups.values()):
                 thread.wait()  # laisser finir les recherches en cours
+            QApplication.processEvents()          # derniers résultats reçus
+            self.flush_pending()
             event.accept()
         else:
             event.ignore()
