@@ -134,7 +134,9 @@ python3 film_viewer.py test_films.md  # une autre liste
 - **colonne « Validé »** : pour un film `À VÉRIFIER`, cocher la case valide
   le titre TMDB proposé et le film passe en `OK`. La ligne reste affichée
   jusqu'au prochain changement de filtre, ce qui permet de décocher en cas
-  d'erreur.
+  d'erreur. Au chargement suivant, un film validé s'affiche comme un `OK`
+  normal, sans case (son infobulle indique « Validé manuellement ») ; pour
+  revenir en arrière : clic droit sur sa ligne → **Annuler la validation**.
 
 - **Quitter** (ou Ctrl+Q, ou la croix de la fenêtre) : une petite fenêtre
   demande de confirmer avant de fermer ;

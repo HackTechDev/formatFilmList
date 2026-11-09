@@ -19,7 +19,9 @@ Bouton « Exporter… » :
     interroger TMDB.
 
 Colonne « Validé » : cocher un film « À VÉRIFIER » valide le titre TMDB
-proposé ; il passe en « OK ». Les validations sont enregistrées dans
+proposé ; il passe en « OK ». Au chargement suivant, un film validé
+s'affiche comme un « OK » normal, sans case ; clic droit sur sa ligne →
+« Annuler la validation » pour revenir en arrière. Les validations sont enregistrées dans
 validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
 
 Films « INTROUVABLE » : double-clic (ou F2) sur « Titre (liste) » pour
@@ -211,6 +213,8 @@ class FilmViewer(QMainWindow):
         header.setStretchLastSection(False)
         self.table.doubleClicked.connect(self.open_tmdb)
         self.table.clicked.connect(self.on_cell_clicked)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.on_context_menu)
 
         self.status_combo = QComboBox()
         self.status_combo.currentIndexChanged.connect(self.on_status_filter)
@@ -334,14 +338,18 @@ class FilmViewer(QMainWindow):
         for col, value in enumerate(film):
             item = items[col]
             if col == COL_CHECK:
-                item.setCheckable(value is not None)
-                if value is not None:
-                    item.setCheckState(Qt.CheckState.Checked if value
-                                       else Qt.CheckState.Unchecked)
+                # Case seulement pour un film à valider. Un film déjà validé
+                # s'affiche comme un OK normal (annulation : clic droit). Une
+                # case cochée pendant la session reste visible jusqu'au
+                # rechargement, car on_validation ne repasse pas par ici.
+                to_validate = value is False
+                item.setCheckable(to_validate)
+                if to_validate:
+                    item.setCheckState(Qt.CheckState.Unchecked)
                 else:
                     item.setData(None, Qt.ItemDataRole.CheckStateRole)
                 item.setToolTip("Cocher pour valider le titre TMDB proposé"
-                                if value is not None else "")
+                                if to_validate else "")
             elif col == 0 or (col == COL_ID and value != ""):
                 item.setData(int(value), Qt.ItemDataRole.DisplayRole)  # tri numérique
             else:
@@ -367,7 +375,8 @@ class FilmViewer(QMainWindow):
         if status == NOT_DONE:
             item.setToolTip("Cliquer pour chercher ce film sur TMDB")
         else:
-            item.setToolTip("Validé manuellement" if validated else "")
+            item.setToolTip("Validé manuellement — clic droit pour annuler la validation"
+                            if validated else "")
 
     def rows_of(self, raw):
         return [r for r in range(self.model.rowCount())
@@ -480,6 +489,37 @@ class FilmViewer(QMainWindow):
         title = self.model.item(row, COL_TITLES[1]).text()
         self.statusBar().showMessage(
             f"« {raw} » → {title} : " + ("validé (OK)" if validated else "à vérifier"), 6000)
+
+    def on_context_menu(self, pos):
+        """Clic droit sur un film validé : proposer d'annuler la validation."""
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        r = self.proxy.mapToSource(index).row()
+        raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
+        if not tmdb_export.is_validated(raw, self.cache.get(raw, {}), self.validations):
+            return
+        menu = QMenu(self)
+        menu.addAction("Annuler la validation", lambda: self.unvalidate(raw))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def unvalidate(self, raw):
+        """Retire la validation : le film redevient « À VÉRIFIER », avec sa case."""
+        self.validations.pop(raw, None)
+        try:
+            tmdb_export.save_validations(self.list_path, self.validations)
+        except OSError as e:
+            QMessageBox.critical(self, "Erreur",
+                                 f"Impossible d'enregistrer les validations :\n{e}")
+            return
+        entry = self.cache.get(raw, {})
+        self.loading = True
+        for r in self.rows_of(raw):
+            num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
+            self.fill_row(r, film_row(num, raw, entry, self.validations))
+        self.loading = False
+        self.fill_status_combo(refilter=False)
+        self.statusBar().showMessage(f"« {raw} » : validation annulée (à vérifier)", 6000)
 
     def on_status_filter(self):
         # Changement de filtre : on prend en compte les dernières validations.
