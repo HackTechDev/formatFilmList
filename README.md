@@ -1,7 +1,8 @@
 # Liste de films enrichie avec TMDB
 
-Ce dépôt contient une liste de films (`liste_film.md`) et un script Python
-(`tmdb_enrich.py`). Le script cherche chaque titre sur
+Ce dépôt contient un script Python (`tmdb_enrich.py`) et une interface
+graphique (`film_viewer.py`) qui enrichissent une liste de films, à créer
+soi-même (voir « Créer sa liste de films »). Le script cherche chaque titre sur
 [TMDB](https://www.themoviedb.org/) (The Movie Database) et récupère sa date
 de sortie, son ou ses réalisateurs, son pays et son identifiant TMDB.
 
@@ -18,6 +19,34 @@ sans refaire la recherche du titre.
   va dans *Paramètres → API*. Le script accepte au choix :
   - la « Clé d'API » (v3) ;
   - le « Jeton d'accès en lecture à l'API » (v4, il commence par `eyJ`).
+- **Une liste de films** : `liste_film.md`, à créer soi-même (voir
+  ci-dessous).
+
+## Créer sa liste de films
+
+La liste n'est pas fournie avec le dépôt : chacun crée la sienne. C'est un
+simple fichier texte, `liste_film.md`, à placer à la racine du dépôt, avec
+**un titre de film par ligne** :
+
+```bash
+cat > liste_film.md <<'FIN'
+Dune 1984
+Rashomon
+In the mood for love
+New York 1997
+FIN
+```
+
+Le format accepté (année, sous-titres, mentions d'édition…) est détaillé dans
+« Format de la liste » ci-dessous.
+
+Le fichier est ignoré par Git (`.gitignore`) : la liste reste personnelle et
+n'est jamais envoyée dans le dépôt. Pense à en garder une copie de
+sauvegarde, car Git ne la conserve pas. Une liste portant un autre nom
+fonctionne aussi : il suffit de la passer en argument
+(`python3 tmdb_enrich.py ma_liste.md`, `python3 film_viewer.py ma_liste.md`).
+Seul `liste_film.md` est ignoré par Git : pour garder une liste d'un autre
+nom hors du dépôt, ajoute-la aussi au `.gitignore`.
 
 ## Configuration de la clé
 
@@ -245,8 +274,8 @@ script), réinitialise :
 La commande liste les fichiers qui vont être supprimés et demande
 confirmation. La liste (`liste_film.md`) et la clé (`config.ini`) ne sont
 jamais supprimées ; les corrections de titres, écrites dans la liste, restent
-donc en place (`git log -- liste_film.md` pour retrouver une version
-antérieure). Le cache est commun à toutes les listes du dossier.
+donc en place. La liste n'étant pas suivie par Git, garde-en une copie de
+sauvegarde. Le cache est commun à toutes les listes du dossier.
 
 ## Problèmes connus
 
