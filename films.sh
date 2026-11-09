@@ -30,6 +30,11 @@ ${GRAS}Commandes :${RAZ}
   test                    essai rapide sur une dizaine de titres (test_films.md)
   vider-cache [liste.md]  supprime le cache TMDB pour relancer toutes les
                           recherches (les validations sont conservées)
+  reinitialiser [--tout] [liste.md]
+                          supprime le cache TMDB et les fichiers de résultats
+                          (liste_film_tmdb*) ; avec --tout, aussi
+                          validations.json. Demande confirmation ; la liste
+                          et config.ini ne sont jamais supprimés.
   aide                    affiche cette aide
 
 ${GRAS}Clé TMDB :${RAZ} fichier config.ini (créé par « ./films.sh config »,
@@ -138,6 +143,52 @@ vider_cache() {
     fi
 }
 
+reinitialiser() {
+    local tout=0
+    if [[ "${1:-}" == "--tout" ]]; then
+        tout=1
+        shift
+    fi
+    local f; f="$(liste "${1:-}")"
+    local d; d="$(dirname "$f")"
+    local nom; nom="$(basename "$f")"
+    local base="$d/${nom%.*}_tmdb"   # même règle que tmdb_export.default_name
+
+    local fichiers=() x
+    shopt -s nullglob
+    for x in "$d/$CACHE" "$d/$CACHE.tmp" "$base.md" "$base.csv" "$base"_*.md "$base"_*.csv; do
+        [[ -f "$x" ]] && fichiers+=("$x")
+    done
+    shopt -u nullglob
+    if (( tout )) && [[ -f "$d/validations.json" ]]; then
+        fichiers+=("$d/validations.json")
+    fi
+    if (( ${#fichiers[@]} == 0 )); then
+        info "Rien à réinitialiser pour $nom."
+        return
+    fi
+
+    echo "${JAUNE}Fichiers qui vont être supprimés :${RAZ}"
+    for x in "${fichiers[@]}"; do
+        case "$(basename "$x")" in
+            "$CACHE")
+                echo "  - $(basename "$x")  (cache TMDB du dossier : $(grep -o '"status"' "$x" | wc -l) film(s), toutes listes confondues)" ;;
+            validations.json)
+                echo "  - validations.json  ($(grep -oE '": *[0-9]+' "$x" | wc -l) validation(s))" ;;
+            *)
+                echo "  - $(basename "$x")" ;;
+        esac
+    done
+    echo "Conservés : $nom, config.ini$( (( tout )) || echo ", validations.json (ajoute --tout pour le supprimer aussi)")."
+    read -r -p "Confirmer la réinitialisation ? [o/N] " rep
+    if [[ "$rep" =~ ^[oOyY]$ ]]; then
+        rm -f -- "${fichiers[@]}"
+        info "Réinitialisé : ${#fichiers[@]} fichier(s) supprimé(s). Tous les films repassent en NON TRAITÉ."
+    else
+        info "Annulé, rien n'a été supprimé."
+    fi
+}
+
 commande="${1:-aide}"
 shift || true
 case "$commande" in
@@ -147,6 +198,7 @@ case "$commande" in
     exporter)              exporter "$@" ;;
     test)                  test_rapide ;;
     vider-cache)           vider_cache "$@" ;;
+    reinitialiser)         reinitialiser "$@" ;;
     aide|-h|--help|help)   aide ;;
     *) echo "${ROUGE}Commande inconnue :${RAZ} $commande" >&2; echo >&2; aide >&2; exit 1 ;;
 esac

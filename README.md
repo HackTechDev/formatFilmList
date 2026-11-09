@@ -65,6 +65,7 @@ python3 tmdb_enrich.py test_films.md
 ./films.sh exporter [liste.md]     # régénère les résultats avec les validations
 ./films.sh test                    # essai rapide sur test_films.md
 ./films.sh vider-cache [liste.md]  # supprime le cache (avec confirmation)
+./films.sh reinitialiser [--tout]  # repart de zéro (avec confirmation)
 ./films.sh aide
 ```
 
@@ -224,11 +225,18 @@ traités sont marqués `(cache)`.
 Un titre reste dans le cache même s'il était `INTROUVABLE`. Après avoir
 corrigé une faute dans la liste, le nouveau titre sera bien recherché ; mais
 pour relancer toutes les recherches (par exemple après une modification du
-script), supprime le cache :
+script), réinitialise :
 
 ```bash
-rm .tmdb_cache.json
+./films.sh reinitialiser          # cache + fichiers de résultats
+./films.sh reinitialiser --tout   # idem + validations.json
 ```
+
+La commande liste les fichiers qui vont être supprimés et demande
+confirmation. La liste (`liste_film.md`) et la clé (`config.ini`) ne sont
+jamais supprimées ; les corrections de titres, écrites dans la liste, restent
+donc en place (`git log -- liste_film.md` pour retrouver une version
+antérieure). Le cache est commun à toutes les listes du dossier.
 
 ## Problèmes connus
 
