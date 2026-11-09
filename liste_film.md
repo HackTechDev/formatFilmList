@@ -1,4 +1,4 @@
-Le hyene intrépide 
+La hyene intrépide
 Les aventuriers de Shanghai 
 Magnificient warriors
 Le frelon Vert 
@@ -24,7 +24,7 @@ Blade of immortal
 L'homme au point de fer 2
 Flying guillotine part 2
 Sniper zone 
-Avalone 
+Avalon
 Gengis Khan 
 Samurai commando 
 Les évadés de l'espace 
