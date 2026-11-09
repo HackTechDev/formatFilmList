@@ -33,7 +33,7 @@ titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
 
 Bouton « Synchronisation » : cherche sur TMDB tous les titres encore « NON
 TRAITÉ », en arrière-plan avec une barre de progression (bouton « Arrêter »
-pour interrompre), puis régénère les fichiers de résultats.
+ou touche Échap pour interrompre), puis régénère les fichiers de résultats.
 """
 import json
 import os
@@ -309,6 +309,11 @@ class FilmViewer(QMainWindow):
         self.sync_label = QLabel()
         self.statusBar().addPermanentWidget(self.sync_label)
         self.statusBar().addPermanentWidget(self.progress)
+        # Échap arrête la synchronisation ; actif seulement pendant celle-ci,
+        # pour ne pas gêner Échap ailleurs (annuler une correction de titre…).
+        self.esc_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self,
+                                      activated=self.stop_sync)
+        self.esc_shortcut.setEnabled(False)
         self.stamp = None
         self.model.itemChanged.connect(self.on_item_changed)
 
@@ -685,6 +690,10 @@ class FilmViewer(QMainWindow):
                 titles.append(raw)
         return titles
 
+    def stop_sync(self):
+        if self.sync and self.sync_btn.isEnabled():
+            self.toggle_sync()
+
     def toggle_sync(self):
         if self.sync:  # déjà en cours : arrêter
             self.sync_stopped = True  # (Qt l'oublie une fois le fil terminé)
@@ -721,6 +730,8 @@ class FilmViewer(QMainWindow):
         self.sync.fatal.connect(self.on_sync_fatal)
         self.sync.finished.connect(self.on_sync_finished)
         self.sync_btn.setText("Arrêter la synchronisation")
+        self.sync_btn.setToolTip("Arrêter la synchronisation (Échap)")
+        self.esc_shortcut.setEnabled(True)
         self.progress.setRange(0, len(titles))
         self.progress.setValue(0)
         self.progress.show()
@@ -739,7 +750,7 @@ class FilmViewer(QMainWindow):
         self.progress.setValue(done)
         self.sync_current = raw or None
         self.sync_label.setText(f"Synchronisation : {done}/{total}"
-                                + (f" — {raw}" if raw else ""))
+                                + (f" — {raw}" if raw else "") + " (Échap pour arrêter)")
         if raw:
             self.set_searching(raw, True)
 
@@ -783,7 +794,9 @@ class FilmViewer(QMainWindow):
         self.progress.hide()
         self.sync_label.clear()
         self.sync_btn.setText("Synchronisation")
+        self.sync_btn.setToolTip("Chercher sur TMDB tous les titres pas encore traités")
         self.sync_btn.setEnabled(True)
+        self.esc_shortcut.setEnabled(False)
         if self.sync_fatal:
             QMessageBox.warning(self, "Synchronisation",
                                 f"Synchronisation interrompue :\n{self.sync_fatal}")
