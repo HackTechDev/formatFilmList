@@ -24,9 +24,10 @@ s'affiche comme un « OK » normal, sans case ; clic droit sur sa ligne →
 « Annuler la validation » pour revenir en arrière. Les validations sont enregistrées dans
 validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
 
-Films « INTROUVABLE » : double-clic (ou F2) sur « Titre (liste) » pour
-corriger le titre. La correction est écrite dans la liste ; le nouveau titre
-sera cherché au prochain lancement de tmdb_enrich.py.
+Films « INTROUVABLE » ou « NON TRAITÉ » : double-clic (ou F2) sur « Titre
+(liste) » pour corriger le titre (pas pendant sa recherche). La correction est
+écrite dans la liste ; le nouveau titre sera cherché au prochain lancement de
+tmdb_enrich.py, ou tout de suite par un clic sur « NON TRAITÉ ».
 
 Films « NON TRAITÉ » : un clic sur « NON TRAITÉ » cherche tout de suite ce
 titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
@@ -170,7 +171,8 @@ class ChooseFilmDialog(QDialog):
         self.choice = None
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"Plusieurs films correspondent à « {raw} ».\n"
-                                "Choisis le bon (double-clic ou « Choisir ») :"))
+                                "Choisis le bon : ↑/↓ puis Entrée (ou double-clic) ;\n"
+                                "→ pour passer et le vérifier plus tard."))
         self.list = QListWidget()
         fm = QFontMetrics(self.list.font())
         for c in candidates:
@@ -193,13 +195,23 @@ class ChooseFilmDialog(QDialog):
         buttons = QDialogButtonBox()
         tmdb_btn = buttons.addButton("Voir sur TMDB", QDialogButtonBox.ButtonRole.HelpRole)
         choose_btn = buttons.addButton("Choisir", QDialogButtonBox.ButtonRole.AcceptRole)
-        skip_btn = buttons.addButton("Passer (à vérifier plus tard)",
+        skip_btn = buttons.addButton("Passer (→)",
                                      QDialogButtonBox.ButtonRole.RejectRole)
         tmdb_btn.clicked.connect(self.open_tmdb)
         choose_btn.clicked.connect(self.pick)
         skip_btn.clicked.connect(self.reject)  # Échap fait de même
-        choose_btn.setDefault(True)
+        skip_btn.setToolTip("Laisser le film « À VÉRIFIER » (touche → ou Échap)")
+        choose_btn.setToolTip("Choisir le film sélectionné (Entrée)")
         layout.addWidget(buttons)
+        # Entrée = « Choisir ». Le bouton par défaut doit être désigné une fois
+        # rattaché à la fenêtre, sinon Qt prend le premier (« Voir sur TMDB »).
+        tmdb_btn.setAutoDefault(False)
+        skip_btn.setAutoDefault(False)
+        choose_btn.setDefault(True)
+        # Clavier : ↑/↓ parcourent la liste (elle a le focus), Entrée choisit,
+        # → passe.
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=self.reject)
+        self.list.setFocus()
         self.adjustSize()  # la fenêtre prend la hauteur de sa liste
 
     def fit_list_height(self, max_height=420):
@@ -338,7 +350,7 @@ class FilmViewer(QMainWindow):
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        # Seul le titre des films INTROUVABLE est modifiable (voir fill_row).
+        # Seul le titre des films INTROUVABLE ou NON TRAITÉ est modifiable (voir fill_row).
         self.table.setEditTriggers(QTableView.EditTrigger.DoubleClicked
                                    | QTableView.EditTrigger.EditKeyPressed)
         self.table.setAlternatingRowColors(True)
@@ -522,16 +534,30 @@ class FilmViewer(QMainWindow):
         items[COL_ID].setToolTip("Double-clic : ouvrir la fiche TMDB" if film[COL_ID] else "")
         raw_item = items[COL_RAW]
         raw_item.setData(film[COL_RAW], RAW_ROLE)
-        editable = film[COL_STATUS] == "INTROUVABLE"
+        editable = (film[COL_STATUS] in ("INTROUVABLE", NOT_DONE)
+                    and not self.is_searching(film[COL_RAW]))
         raw_item.setEditable(editable)
         raw_item.setToolTip("Double-clic (ou F2) pour corriger le titre" if editable else "")
         homonyms = self.cache.get(film[COL_RAW], {}).get("candidates")
         if homonyms and film[COL_STATUS] == "À VÉRIFIER":
             items[COL_STATUS].setToolTip(f"{len(homonyms)} films portent ce titre — "
                                          "clic droit → « Choisir parmi les homonymes… »")
-        if film[COL_STATUS] == NOT_DONE and (film[COL_RAW] in self.lookups
-                                             or film[COL_RAW] == self.sync_current):
+        if film[COL_STATUS] == NOT_DONE and self.is_searching(film[COL_RAW]):
             self.set_status(items[COL_STATUS], SEARCHING)
+
+    def is_searching(self, raw):
+        """Vrai si ce titre est en cours de recherche sur TMDB."""
+        return raw in self.lookups or raw == self.sync_current
+
+    def set_title_editable(self, raw, editable):
+        """Pas de correction de titre pendant la recherche de ce titre."""
+        self.loading = True
+        for r in self.rows_of(raw):
+            ok = editable and self.model.item(r, COL_STATUS).text() in ("INTROUVABLE", NOT_DONE)
+            item = self.model.item(r, COL_RAW)
+            item.setEditable(ok)
+            item.setToolTip("Double-clic (ou F2) pour corriger le titre" if ok else "")
+        self.loading = False
 
     @staticmethod
     def set_status(item, status, validated=None):
@@ -576,6 +602,7 @@ class FilmViewer(QMainWindow):
         for row in self.rows_of(raw):
             self.set_status(self.model.item(row, COL_STATUS), SEARCHING)
         self.loading = False
+        self.set_title_editable(raw, False)
         thread.start()
 
     def on_ambiguous(self, raw, entry):
@@ -603,9 +630,11 @@ class FilmViewer(QMainWindow):
             num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
             self.fill_row(r, film_row(num, raw, entry, self.validations))
         self.loading = False
+        self.set_title_editable(raw, True)  # recherche finie (ex. INTROUVABLE)
         self.fill_status_combo(refilter=False)
 
     def on_lookup_found(self, raw, entry):
+        self.lookups.pop(raw, None)
         try:
             store_in_cache(self.cache_path, raw, entry)
         except OSError as e:
@@ -617,10 +646,12 @@ class FilmViewer(QMainWindow):
             f"« {raw} » → {tmdb_enrich.found_label(entry)} : {status}", 10000)
 
     def on_lookup_failed(self, raw, message):
+        self.lookups.pop(raw, None)
         self.loading = True
         for r in self.rows_of(raw):
             self.set_status(self.model.item(r, COL_STATUS), NOT_DONE)
         self.loading = False
+        self.set_title_editable(raw, True)
         self.statusBar().clearMessage()
         QMessageBox.warning(self, "Recherche TMDB",
                             f"Impossible de chercher « {raw} » :\n{message}")
@@ -634,10 +665,17 @@ class FilmViewer(QMainWindow):
             self.on_title_edited(item)
 
     def on_title_edited(self, item):
-        """Titre d'un film INTROUVABLE corrigé : mise à jour de la liste."""
+        """Titre d'un film INTROUVABLE ou NON TRAITÉ corrigé : mise à jour de la liste."""
         r = item.row()
         old = item.data(RAW_ROLE)
         new = " ".join(item.text().split())
+        if self.is_searching(old):  # recherche lancée pendant la saisie
+            self.loading = True
+            item.setText(old)
+            self.loading = False
+            self.statusBar().showMessage(
+                f"« {old} » est en cours de recherche : titre non modifié", 8000)
+            return
         if not new or new == old:
             self.loading = True
             item.setText(old)  # rien à faire : on remet le titre d'origine
@@ -659,7 +697,8 @@ class FilmViewer(QMainWindow):
         if e:
             suite = f"déjà connu : {self.model.item(r, COL_STATUS).text()}"
         else:
-            suite = "sera recherché au prochain « ./films.sh enrichir »"
+            suite = ("clic sur « NON TRAITÉ » pour le chercher tout de suite, "
+                     "ou au prochain « ./films.sh enrichir »")
         self.statusBar().showMessage(f"Titre corrigé : « {old} » → « {new} » ({suite})", 8000)
 
     def on_validation(self, item):
@@ -875,6 +914,7 @@ class FilmViewer(QMainWindow):
                 self.set_status(self.model.item(r, COL_STATUS),
                                 SEARCHING if searching else NOT_DONE)
         self.loading = False
+        self.set_title_editable(raw, not searching)
 
     def on_sync_progress(self, done, total, raw):
         self.sync_done = done

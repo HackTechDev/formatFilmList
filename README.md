@@ -162,11 +162,14 @@ python3 film_viewer.py test_films.md  # une autre liste
   il est enregistré dans le cache comme si `./films.sh enrichir` l'avait
   trouvé. Nécessite la clé TMDB (`./films.sh config`). Pratique juste après
   avoir corrigé un titre `INTROUVABLE` ;
-- **correction des titres `INTROUVABLE`** : double-clic (ou F2) sur la
-  cellule « Titre (liste) » pour corriger le titre, puis Entrée. La correction
-  est écrite directement dans la liste (`liste_film.md`) ; le film passe en
-  `NON TRAITÉ` et sera recherché au prochain `./films.sh enrichir`. Si le
-  nouveau titre est déjà dans le cache, son statut s'affiche tout de suite.
+- **correction des titres `INTROUVABLE` ou `NON TRAITÉ`** : double-clic
+  (ou F2) sur la cellule « Titre (liste) » pour corriger le titre, puis
+  Entrée. La correction est écrite directement dans la liste
+  (`liste_film.md`) ; le film est (ou reste) `NON TRAITÉ` : un clic sur
+  `NON TRAITÉ` le cherche tout de suite, sinon il sera recherché au prochain
+  `./films.sh enrichir`. Si le nouveau titre est déjà dans le cache, son
+  statut s'affiche tout de suite. Un titre en cours de recherche
+  (`RECHERCHE…`) ne peut pas être modifié.
 
 Les validations sont enregistrées dans `validations.json`, à côté de la liste
 (titre de la liste → ID TMDB validé). `tmdb_enrich.py` les reprend : les films
@@ -205,9 +208,16 @@ Quand plusieurs films portent exactement le titre cherché (par exemple
 - dans l'interface (recherche au clic ou **Synchronisation**), une petite
   fenêtre liste les films possibles avec leur année, leur réalisateur et leur
   résumé sur une ligne. **Choisir** (ou double-clic) retient le film et le
-  passe en `OK` ; **Voir sur TMDB** ouvre sa fiche ; **Passer** (ou Échap) le
-  laisse `À VÉRIFIER`. La synchronisation attend la réponse avant de continuer
-  ;
+  passe en `OK` ; **Voir sur TMDB** ouvre sa fiche ; **Passer** le laisse
+  `À VÉRIFIER`. La synchronisation attend la réponse avant de continuer.
+  Au clavier :
+
+  | Touche | Action |
+  |---|---|
+  | ↑ / ↓ | film précédent / suivant |
+  | Entrée | choisir le film sélectionné |
+  | → ou Échap | passer (le film reste `À VÉRIFIER`) |
+
 - `./films.sh enrichir` ne peut pas poser la question : il retient le premier
   film en `À VÉRIFIER` et garde la liste des homonymes dans le cache.
 
