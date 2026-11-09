@@ -20,6 +20,18 @@ HEADER = ["#", "Titre (liste)", "Titre TMDB", "Titre original",
           "Date de sortie", "Réalisateur", "Pays", "ID TMDB", "Statut"]
 I_NUM, I_RAW, I_TITLE = 0, 1, 2
 I_ID, I_STATUS = HEADER.index("ID TMDB"), HEADER.index("Statut")
+
+# Colonnes des fichiers écrits : le titre de la liste n'y figure plus, le
+# titre TMDB le remplace ; à défaut (film introuvable ou pas encore cherché),
+# c'est le titre de la liste qui est repris.
+OUT_HEADER = ["#", "Titre", "Titre original", "Date de sortie", "Réalisateur",
+              "Pays", "ID TMDB", "Statut"]
+O_TITLE, O_ID = OUT_HEADER.index("Titre"), OUT_HEADER.index("ID TMDB")
+
+
+def out_row(r):
+    """Ligne interne (HEADER) -> ligne écrite (OUT_HEADER)."""
+    return [r[I_NUM], r[I_TITLE] or r[I_RAW]] + list(r[I_TITLE + 1:])
 STATUSES = ["OK", "À VÉRIFIER", "INTROUVABLE"]
 TMDB_URL = "https://www.themoviedb.org/movie/{}"
 
@@ -83,9 +95,9 @@ def write_csv(path, rows):
     # utf-8-sig : le BOM permet à Excel d'afficher correctement les accents
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(HEADER + ["Lien"])
+        w.writerow(OUT_HEADER + ["Lien"])
         for r in rows:
-            w.writerow(list(r) + [TMDB_URL.format(r[I_ID]) if r[I_ID] else ""])
+            w.writerow(out_row(r) + [TMDB_URL.format(r[I_ID]) if r[I_ID] else ""])
 
 
 def _md(s):
@@ -107,13 +119,15 @@ def write_md(path, rows, title, show_duplicates=False):
             f.write("Aucun film.\n")
             return
         f.write(f"{len(rows)} film(s) — {counts_line(rows)}\n\n")
-        f.write("| " + " | ".join(HEADER) + " |\n")
-        f.write("|" + "---|" * len(HEADER) + "\n")
+        f.write("| " + " | ".join(OUT_HEADER) + " |\n")
+        f.write("|" + "---|" * len(OUT_HEADER) + "\n")
         for r in rows:
-            r = list(r)
+            o = [_md(c) for c in out_row(r)]
             if r[I_ID]:
-                r[I_ID] = f"[{r[I_ID]}]({TMDB_URL.format(r[I_ID])})"
-            f.write("| " + " | ".join(_md(c) for c in r) + " |\n")
+                o[O_ID] = f"[{r[I_ID]}]({TMDB_URL.format(r[I_ID])})"
+            elif o[O_TITLE]:
+                o[O_TITLE] = f"*{o[O_TITLE]}*"  # pas de titre TMDB : titre de la liste
+            f.write("| " + " | ".join(o) + " |\n")
         dups = duplicates(rows) if show_duplicates else {}
         if dups:
             f.write("\n## Doublons probables\n\n")

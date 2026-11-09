@@ -97,6 +97,11 @@ Le script crée deux fichiers à côté de la liste, en gardant l'ordre d'origin
   `liste_film_tmdb_INTROUVABLE` (`.md` et `.csv`). Ils sont réécrits à chaque
   exécution, même vides, pour ne jamais garder une ancienne liste.
 
+Les tableaux donnent le titre trouvé sur TMDB, pas celui de la liste (le `#`
+renvoie à la ligne de la liste). Pour un film introuvable ou pas encore
+cherché, c'est le titre de la liste qui est repris, en *italique* dans le
+Markdown.
+
 Chaque film reçoit un statut :
 
 | Statut | Signification |
