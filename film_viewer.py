@@ -37,6 +37,9 @@ titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
 
 Films « À VÉRIFIER » : un clic sur « À VÉRIFIER » ouvre la fenêtre de choix
 du film (homonymes déjà connus, sinon films possibles cherchés sur TMDB).
+Bouton « Corriger… » → « Introuvables… » ou « À vérifier… » : tous les titres
+de ce statut dans une zone de texte, un par ligne, à corriger puis enregistrer
+d'un coup ; les titres corrigés sont ensuite cherchés sur TMDB.
 Films « INTROUVABLE » : un clic sur « INTROUVABLE » ouvre la même fenêtre et
 y cherche le titre ; le texte de recherche se modifie (puis Entrée).
 
@@ -57,12 +60,12 @@ import threading
 
 from PyQt6.QtCore import (QEvent, QFileSystemWatcher, QSortFilterProxyModel, Qt,
                           QThread, QTimer, QUrl, pyqtSignal)
-from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence, QShortcut,
+from PyQt6.QtGui import (QColor, QDesktopServices, QFontDatabase, QFontMetrics, QKeySequence, QShortcut,
                          QStandardItem, QStandardItemModel)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QFileDialog, QHBoxLayout, QHeaderView, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-                             QMenu, QMessageBox, QProgressBar, QPushButton,
+                             QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                              QTableView, QVBoxLayout, QWidget)
 
 import tmdb_enrich
@@ -338,6 +341,103 @@ class ChooseFilmDialog(QDialog):
         self.accept()
 
 
+class FixTitlesDialog(QDialog):
+    """Corrige d'un coup les titres des films d'un statut, un par ligne.
+
+    À gauche, en lecture seule : n° de ligne et titre actuel. À droite, les
+    titres à modifier, dans le même ordre. Une ligne vidée garde son titre.
+    Après exec() : changes = [(ligne du tableau, ancien, nouveau)].
+    """
+
+    def __init__(self, rows, status="INTROUVABLE", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Corriger les titres « INTROUVABLE »" if status == "INTROUVABLE"
+                            else "Corriger les titres « À VÉRIFIER »")
+        self.resize(900, 560)
+        self.rows = rows  # [(ligne du tableau, n° dans la liste, titre)]
+        self.changes = []
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            f"{len(rows)} film(s) {status}. Corrige les titres dans la colonne de "
+            "droite, une ligne par film, sans ajouter ni supprimer de ligne.\n"
+            "Une ligne laissée vide garde son titre. Les corrections sont écrites dans "
+            "la liste à l'enregistrement."))
+        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        panes = QHBoxLayout()
+        self.before = QPlainTextEdit()
+        self.before.setReadOnly(True)
+        self.before.setPlainText("\n".join(f"{num:>5}  {raw}" for _, num, raw in rows))
+        self.after = QPlainTextEdit()
+        self.after.setPlainText("\n".join(raw for _, _, raw in rows))
+        for edit in (self.before, self.after):
+            edit.setFont(mono)
+            edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # Défilement synchronisé : chaque ligne reste en face de son titre d'origine.
+        self.before.verticalScrollBar().valueChanged.connect(
+            self.after.verticalScrollBar().setValue)
+        self.after.verticalScrollBar().valueChanged.connect(
+            self.before.verticalScrollBar().setValue)
+        self.after.textChanged.connect(self.update_info)
+        left, right = QVBoxLayout(), QVBoxLayout()
+        left.addWidget(QLabel("Ligne et titre actuel"))
+        left.addWidget(self.before)
+        right.addWidget(QLabel("Titre corrigé"))
+        right.addWidget(self.after)
+        panes.addLayout(left, 2)
+        panes.addLayout(right, 3)
+        layout.addLayout(panes)
+        self.info = QLabel()
+        layout.addWidget(self.info)
+        self.search_after = QCheckBox("Chercher les titres corrigés sur TMDB après l'enregistrement")
+        self.search_after.setChecked(True)
+        layout.addWidget(self.search_after)
+        buttons = QDialogButtonBox()
+        self.save_btn = buttons.addButton("Enregistrer", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_btn = buttons.addButton("Annuler", QDialogButtonBox.ButtonRole.RejectRole)
+        self.save_btn.clicked.connect(self.save)
+        cancel_btn.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+        self.save_btn.setAutoDefault(False)  # Entrée = nouvelle ligne dans le texte
+        cancel_btn.setAutoDefault(False)
+        self.after.setFocus()
+        self.update_info()
+
+    def new_titles(self):
+        lines = self.after.toPlainText().split("\n")
+        while len(lines) > len(self.rows) and not lines[-1].strip():
+            lines.pop()  # lignes vides ajoutées en fin de texte : ignorées
+        return lines
+
+    def pending_changes(self):
+        lines = self.new_titles()
+        if len(lines) != len(self.rows):
+            return None
+        out = []
+        for (r, _, old), line in zip(self.rows, lines):
+            new = " ".join(line.split())
+            if new and new != old:
+                out.append((r, old, new))
+        return out
+
+    def update_info(self):
+        changes = self.pending_changes()
+        if changes is None:
+            n = len(self.new_titles())
+            self.info.setText(f"<b style='color:#d43c3c'>{n} ligne(s) au lieu de "
+                              f"{len(self.rows)} : une ligne a été ajoutée ou supprimée.</b>")
+            self.save_btn.setEnabled(False)
+        else:
+            self.info.setText(f"{len(changes)} titre(s) modifié(s).")
+            self.save_btn.setEnabled(bool(changes))
+
+    def save(self):
+        changes = self.pending_changes()
+        if not changes:
+            return
+        self.changes = changes
+        self.accept()
+
+
 class TmdbThread(QThread):
     """Fil de recherche TMDB qui peut demander de choisir parmi des homonymes."""
     ambiguous = pyqtSignal(str, object)   # titre, entrée avec « candidates »
@@ -393,9 +493,12 @@ class SyncThread(TmdbThread):
     title_failed = pyqtSignal(str, str)    # titre, erreur (on passe au suivant)
     fatal = pyqtSignal(str)                # erreur bloquante (clé…) : arrêt
 
-    def __init__(self, titles, parent):
+    def __init__(self, titles, parent, keep=None):
         super().__init__(parent)
         self.titles = titles
+        # {titre: entrée} : si la recherche ne trouve rien, on garde cette
+        # entrée (film déjà trouvé d'un titre À VÉRIFIER corrigé).
+        self.keep = keep or {}
 
     def run(self):
         total = len(self.titles)
@@ -404,11 +507,14 @@ class SyncThread(TmdbThread):
                 return
             self.progress.emit(i, total, raw)
             try:
-                entry = self.resolve(raw, tmdb_enrich.lookup(raw))
+                entry = tmdb_enrich.lookup(raw)
+                if entry.get("status") == "INTROUVABLE" and raw in self.keep:
+                    entry = self.keep[raw]
+                entry = self.resolve(raw, entry)
             except tmdb_enrich.TmdbError as e:
                 self.fatal.emit(str(e))
                 return
-            except Exception as e:  # réseau… : ce titre reste NON TRAITÉ
+            except Exception as e:  # réseau… : ce titre reste tel quel
                 self.title_failed.emit(raw, f"{type(e).__name__} : {e}")
                 continue
             self.found.emit(raw, entry)
@@ -487,6 +593,12 @@ class FilmViewer(QMainWindow):
         self.sync_btn = QPushButton("Synchronisation")
         self.sync_btn.setToolTip("Chercher sur TMDB tous les titres pas encore traités")
         self.sync_btn.clicked.connect(self.toggle_sync)
+        self.fix_btn = QPushButton("Corriger…")
+        self.fix_btn.setToolTip("Corriger d'un coup les titres des films d'un statut")
+        fix_menu = QMenu(self.fix_btn)
+        fix_menu.addAction("Introuvables…", lambda: self.fix_titles("INTROUVABLE"))
+        fix_menu.addAction("À vérifier…", lambda: self.fix_titles("À VÉRIFIER"))
+        self.fix_btn.setMenu(fix_menu)
         export_btn = QPushButton("Exporter…")
         export_menu = QMenu(export_btn)
         export_menu.addAction("Films affichés…", self.export).setToolTip(
@@ -501,6 +613,7 @@ class FilmViewer(QMainWindow):
         bar.addWidget(self.search, 1)
         bar.addWidget(reload_btn)
         bar.addWidget(self.sync_btn)
+        bar.addWidget(self.fix_btn)
         bar.addWidget(export_btn)
         bar.addWidget(open_btn)
         bar.addWidget(quit_btn)
@@ -828,13 +941,30 @@ class FilmViewer(QMainWindow):
             item.setText(old)  # rien à faire : on remet le titre d'origine
             self.loading = False
             return
-        num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
         try:
-            rename_in_list(self.list_path, num, old, new)
-        except (OSError, ValueError) as e:
-            QMessageBox.critical(self, "Erreur", f"Impossible de corriger le titre :\n{e}")
+            kept, e = self.rename_row(r, old, new)
+        except (OSError, ValueError) as err:
+            QMessageBox.critical(self, "Erreur", f"Impossible de corriger le titre :\n{err}")
             self.reload()
             return
+        if kept:
+            suite = ("film TMDB conservé, à vérifier : clic sur « À VÉRIFIER » pour "
+                     "confirmer ou choisir un autre film")
+        elif e:
+            suite = f"déjà connu : {self.model.item(r, COL_STATUS).text()}"
+        else:
+            suite = ("clic sur « NON TRAITÉ » pour le chercher tout de suite, "
+                     "ou au prochain « ./films.sh enrichir »")
+        self.statusBar().showMessage(f"Titre corrigé : « {old} » → « {new} » ({suite})", 8000)
+
+    def rename_row(self, r, old, new):
+        """Renomme le titre de la ligne r dans la liste et dans le tableau.
+
+        Retourne (film TMDB conservé ?, entrée de cache du nouveau titre).
+        Lève OSError / ValueError si la liste n'a pas pu être modifiée.
+        """
+        num = self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole)
+        rename_in_list(self.list_path, num, old, new)
         old_status = self.model.item(r, COL_STATUS).text()
         e = self.cache.get(new, {})
         kept = False
@@ -856,15 +986,7 @@ class FilmViewer(QMainWindow):
         self.fill_row(r, film_row(num, new, e, self.validations))
         self.loading = False
         self.fill_status_combo(refilter=False)
-        if kept:
-            suite = ("film TMDB conservé, à vérifier : clic sur « À VÉRIFIER » pour "
-                     "confirmer ou choisir un autre film")
-        elif e:
-            suite = f"déjà connu : {self.model.item(r, COL_STATUS).text()}"
-        else:
-            suite = ("clic sur « NON TRAITÉ » pour le chercher tout de suite, "
-                     "ou au prochain « ./films.sh enrichir »")
-        self.statusBar().showMessage(f"Titre corrigé : « {old} » → « {new} » ({suite})", 8000)
+        return kept, e
 
     def on_validation(self, item):
         """Coche « Validé » : enregistre la validation et met à jour le statut."""
@@ -1057,10 +1179,60 @@ class FilmViewer(QMainWindow):
         box.exec()
         if box.clickedButton() is not go_btn:
             return
+        self.start_sync(titles)
+
+    def fix_titles(self, status):
+        """Fenêtre pour corriger d'un coup les titres INTROUVABLE ou À VÉRIFIER.
+
+        Les titres corrigés sont ensuite cherchés sur TMDB (si la case est
+        cochée). Pour un À VÉRIFIER, le film déjà trouvé est conservé si la
+        nouvelle recherche ne trouve rien.
+        """
+        title = f"Corriger les titres « {status} »"
+        rows = []
+        for r in range(self.model.rowCount()):
+            raw = self.model.item(r, COL_RAW).data(RAW_ROLE)
+            if self.model.item(r, COL_STATUS).text() == status and not self.is_searching(raw):
+                rows.append((r, self.model.item(r, 0).data(Qt.ItemDataRole.DisplayRole), raw))
+        if not rows:
+            QMessageBox.information(self, title, f"Aucun film {status} dans la liste.")
+            return
+        rows.sort(key=lambda x: x[1])  # ordre de la liste
+        dialog = FixTitlesDialog(rows, status, self)
+        if not dialog.exec() or not dialog.changes:
+            return
+        done, to_search, keep = 0, [], {}
+        for r, old, new in dialog.changes:
+            try:
+                kept, e = self.rename_row(r, old, new)
+            except (OSError, ValueError) as err:
+                QMessageBox.critical(
+                    self, title,
+                    f"Arrêt après {done} correction(s) : impossible de corriger "
+                    f"« {old} » :\n{err}")
+                self.reload()
+                return
+            done += 1
+            # À chercher : titre inconnu, ou film conservé d'un À VÉRIFIER.
+            if (not e or kept) and new not in to_search:
+                to_search.append(new)
+                if kept:
+                    keep[new] = e
+        message = f"{done} titre(s) corrigé(s) dans la liste"
+        if to_search and dialog.search_after.isChecked():
+            if self.sync:
+                message += " ; synchronisation déjà en cours : relance-la ensuite pour les chercher"
+            else:
+                self.start_sync(to_search, keep)
+                message += f" ; recherche de {len(to_search)} titre(s) sur TMDB"
+        self.statusBar().showMessage(message, 10000)
+
+    def start_sync(self, titles, keep=None):
+        """Lance la recherche TMDB de ces titres, en arrière-plan (keep : voir SyncThread)."""
         self.sync_stats, self.sync_errors, self.sync_fatal = {}, [], None
         self.sync_done = 0
         self.sync_stopped = False
-        self.sync = SyncThread(titles, self)
+        self.sync = SyncThread(titles, self, keep)
         self.sync.progress.connect(self.on_sync_progress)
         self.sync.found.connect(self.on_sync_found)
         self.sync.title_failed.connect(self.on_sync_title_failed)

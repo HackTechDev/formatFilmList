@@ -205,6 +205,19 @@ python3 film_viewer.py test_films.md  # une autre liste
   titre original, année…) puis Entrée, et choisis le film : il passe en `OK`.
   Le titre de la liste n'est pas modifié (pour le corriger : double-clic sur
   le titre) ;
+- **Corriger…** → **Introuvables…** ou **À vérifier…** : corrige d'un coup
+  les titres de tous les films de ce statut. La fenêtre montre à gauche le
+  n° de ligne et le titre actuel, à droite les titres à modifier, un par ligne
+  et dans le même ordre (sans ajouter ni supprimer de ligne ; une ligne vidée
+  garde son titre). **Enregistrer** écrit les corrections dans la liste, puis
+  les titres corrigés sont cherchés sur TMDB aussitôt (case cochée par
+  défaut) :
+  - `INTROUVABLE` : un titre corrigé déjà connu du cache prend directement son
+    statut ; les autres sont cherchés (ou le seront au prochain
+    `./films.sh enrichir` si la case est décochée) ;
+  - `À VÉRIFIER` : chaque titre corrigé est cherché à nouveau ; s'il
+    correspond exactement à un film, il passe `OK`. Si la recherche ne trouve
+    rien, le film déjà trouvé est conservé (le film reste `À VÉRIFIER`) ;
 - **correction des titres**, quel que soit le statut : double-clic (ou F2)
   sur la cellule « Titre (liste) » pour corriger le titre, puis Entrée (sur
   cette cellule, le double-clic n'ouvre pas la fiche TMDB). La correction est
