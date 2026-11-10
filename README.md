@@ -3,8 +3,9 @@
 Ce dépôt contient un script Python (`tmdb_enrich.py`) et une interface
 graphique (`film_viewer.py`) qui enrichissent une liste de films, à créer
 soi-même (voir « Créer sa liste de films »). Le script cherche chaque titre sur
-[TMDB](https://www.themoviedb.org/) (The Movie Database) et récupère sa date
-de sortie, son ou ses réalisateurs, son pays et son identifiant TMDB.
+[TMDB](https://www.themoviedb.org/) (The Movie Database), parmi les films
+**et** les séries télévisées, et récupère sa date de sortie, son ou ses
+réalisateurs, son pays et son identifiant TMDB (voir « Films et séries »).
 
 Le pays est le pays d'origine indiqué par TMDB (à défaut, les pays de
 production), en français. Les films mis en cache avant l'ajout de cette
@@ -261,6 +262,42 @@ Les fichiers sont réécrits à partir de la liste, du cache et de
 `validations.json` : les films validés passent en `OK` (et quittent la liste
 `À VÉRIFIER`), les corrections de titres sont prises en compte, et les titres
 pas encore cherchés apparaissent en `NON TRAITÉ` dans le tableau complet.
+
+## Films et séries
+
+Chaque titre est cherché à la fois parmi les films et parmi les séries
+télévisées de TMDB. La colonne **Type** (dans l'interface et dans les fichiers
+exportés) indique ce qui a été retenu :
+
+| Type | Règle |
+|---|---|
+| `Concert` | un mot-clé TMDB du titre contient « concert » (ex. « concert film ») |
+| `Documentaire` | genre TMDB « Documentaire » (film ou série documentaire) |
+| `Série télévisée` | une série, ni concert ni documentaire |
+| `Film` | tout le reste |
+
+TMDB n'a pas de catégorie « concert » : la règle des mots-clés peut manquer un
+concert peu renseigné sur TMDB (il apparaît alors en `Documentaire` ou en
+`Film`). Les titres mis en cache avant cette colonne s'affichent en `Film` ou
+`Série télévisée` jusqu'au prochain `./films.sh enrichir`, qui complète leur
+type (une requête par titre, sans refaire la recherche).
+
+- Pour une série, la date est celle de la **première diffusion** et la
+  colonne « Réalisateur » contient le ou les **créateurs** de la série.
+- Si le titre correspond exactement à un film **et** à une série (ex.
+  « Fargo »), le film est retenu en `À VÉRIFIER` et les deux sont proposés
+  dans la fenêtre de choix (voir « Films homonymes ») ; une série y est notée
+  « série créée par … ».
+- Les liens TMDB pointent vers la fiche du film (`/movie/…`) ou de la série
+  (`/tv/…`). Chez TMDB, un film et une série peuvent avoir le même ID : le
+  type permet de les distinguer partout (liens, validations, doublons).
+- Le cache et les validations d'avant les séries restent valables : une
+  entrée sans type est un film. Les titres déjà dans le cache ne sont pas
+  recherchés à nouveau ; pour leur appliquer la recherche dans les séries,
+  clique sur leur statut (`À VÉRIFIER`, `INTROUVABLE`) ou réinitialise le
+  cache (`./films.sh reinitialiser`).
+- Chaque recherche interroge TMDB deux fois (films et séries) : un
+  traitement complet prend environ deux fois plus de temps qu'avant.
 
 ## Films homonymes
 

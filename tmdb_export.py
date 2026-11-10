@@ -8,7 +8,15 @@ interroger TMDB :
     python3 tmdb_export.py liste_film.md
 
 Une ligne de film est une liste :
-    [#, titre (liste), titre TMDB, titre original, date, réalisateur, pays, ID TMDB, statut]
+    [#, titre (liste), titre TMDB, titre original, type, date, réalisateur, pays,
+     ID TMDB, statut, média]
+type : Film, Série télévisée, Concert ou Documentaire (voir type_label) ;
+média : « movie » ou « tv », pour le lien TMDB (pas écrit dans les fichiers).
+
+Films et séries : une entrée de cache a un champ « media » (« movie » ou « tv » ;
+absent = film, pour le cache d'avant les séries). Les ID TMDB des films et des
+séries sont indépendants : un film et une série peuvent avoir le même ID, d'où
+la clé « media:id » (voir key()).
 """
 import csv
 import json
@@ -16,24 +24,86 @@ import os
 import sys
 import unicodedata
 
-HEADER = ["#", "Titre (liste)", "Titre TMDB", "Titre original",
-          "Date de sortie", "Réalisateur", "Pays", "ID TMDB", "Statut"]
+HEADER = ["#", "Titre (liste)", "Titre TMDB", "Titre original", "Type",
+          "Date de sortie", "Réalisateur", "Pays", "ID TMDB", "Statut", "Média"]
 I_NUM, I_RAW, I_TITLE = 0, 1, 2
-I_ID, I_STATUS = HEADER.index("ID TMDB"), HEADER.index("Statut")
+I_TYPE, I_ID, I_STATUS = HEADER.index("Type"), HEADER.index("ID TMDB"), HEADER.index("Statut")
+I_MEDIA = HEADER.index("Média")
 
 # Colonnes des fichiers écrits : le titre de la liste n'y figure plus, le
 # titre TMDB le remplace ; à défaut (film introuvable ou pas encore cherché),
 # c'est le titre de la liste qui est repris.
-OUT_HEADER = ["#", "Titre", "Titre original", "Date de sortie", "Réalisateur",
+OUT_HEADER = ["#", "Titre", "Titre original", "Type", "Date de sortie", "Réalisateur",
               "Pays", "ID TMDB", "Statut"]
 O_TITLE, O_ID = OUT_HEADER.index("Titre"), OUT_HEADER.index("ID TMDB")
 
 
 def out_row(r):
-    """Ligne interne (HEADER) -> ligne écrite (OUT_HEADER)."""
-    return [r[I_NUM], r[I_TITLE] or r[I_RAW]] + list(r[I_TITLE + 1:])
+    """Ligne interne (HEADER) -> ligne écrite (OUT_HEADER), sans le média."""
+    return [r[I_NUM], r[I_TITLE] or r[I_RAW]] + list(r[I_TITLE + 1:I_STATUS + 1])
 STATUSES = ["OK", "À VÉRIFIER", "INTROUVABLE"]
-TMDB_URL = "https://www.themoviedb.org/movie/{}"
+TMDB_URL = "https://www.themoviedb.org/movie/{}"  # film ; voir tmdb_url()
+# Catégorie (champ « kind » du cache, voir tmdb_enrich.classify) -> colonne « Type ».
+KIND_LABELS = {"film": "Film", "serie": "Série télévisée",
+               "concert": "Concert", "documentaire": "Documentaire"}
+
+
+def media_of(entry):
+    """« movie » ou « tv » (absent : film, cache d'avant les séries)."""
+    return entry.get("media") or "movie"
+
+
+def key(entry):
+    """Clé unique d'un film ou d'une série : « movie:123 » ou « tv:123 »."""
+    return f"{media_of(entry)}:{entry['id']}"
+
+
+def parse_key(k):
+    """« tv:123 » -> (« tv », 123) ; un nombre seul est un film."""
+    if isinstance(k, int):
+        return "movie", k
+    media, _, num = str(k).partition(":")
+    return (media, int(num)) if num else ("movie", int(media))
+
+
+def tmdb_url(movie_id, media="movie"):
+    """Fiche TMDB d'un film ou d'une série."""
+    return f"https://www.themoviedb.org/{'tv' if media == 'tv' else 'movie'}/{movie_id}"
+
+
+def kind_of(entry):
+    """Catégorie : film, serie, concert ou documentaire.
+
+    Sans « kind » (cache d'avant cette colonne, complété au prochain
+    « ./films.sh enrichir ») : film ou série selon le média.
+    """
+    return entry.get("kind") or ("serie" if media_of(entry) == "tv" else "film")
+
+
+def type_label(entry):
+    """« Film », « Série télévisée », « Concert », « Documentaire », ou vide
+    si rien n'a été trouvé."""
+    return KIND_LABELS[kind_of(entry)] if entry.get("id") else ""
+
+
+def validation_value(entry):
+    """Valeur gardée dans validations.json : l'ID pour un film (comme avant
+    les séries), « tv:ID » pour une série."""
+    return entry["id"] if media_of(entry) == "movie" else key(entry)
+
+
+def entry_row(i, raw, e, status):
+    """Ligne (voir HEADER) pour le titre n° i de la liste et son entrée de cache."""
+    return [i, raw, e.get("title", ""), e.get("original_title", ""), type_label(e),
+            e.get("date", ""), e.get("director", ""), e.get("country", ""),
+            e.get("id", ""), status, media_of(e) if e.get("id") else ""]
+
+
+def row_url(r):
+    """Fiche TMDB d'une ligne (voir HEADER), ou "" sans ID."""
+    if not r[I_ID]:
+        return ""
+    return tmdb_url(r[I_ID], r[I_MEDIA] or "movie")
 
 # Films « À VÉRIFIER » validés à la main dans film_viewer.py :
 # {titre de la liste: ID TMDB validé}. Fichier à côté de la liste.
@@ -67,9 +137,9 @@ def save_validations(list_path, validations):
 
 
 def is_validated(raw, entry, validations):
-    """Vrai si ce film « À VÉRIFIER » a été validé avec le même ID TMDB."""
+    """Vrai si ce film « À VÉRIFIER » a été validé avec le même film (ou série)."""
     return (entry.get("status") == "À VÉRIFIER" and bool(entry.get("id"))
-            and validations.get(raw) == entry.get("id"))
+            and validations.get(raw) == validation_value(entry))
 
 
 def effective_status(raw, entry, validations):
@@ -97,7 +167,7 @@ def write_csv(path, rows):
         w = csv.writer(f, delimiter=";")
         w.writerow(OUT_HEADER + ["Lien"])
         for r in rows:
-            w.writerow(out_row(r) + [TMDB_URL.format(r[I_ID]) if r[I_ID] else ""])
+            w.writerow(out_row(r) + [row_url(r)])
 
 
 def _md(s):
@@ -108,7 +178,8 @@ def duplicates(rows):
     """{clé: [numéros de ligne]} pour les films présents plusieurs fois."""
     occ = {}
     for r in rows:
-        occ.setdefault(r[I_ID] or r[I_RAW], []).append(r)
+        k = (r[I_MEDIA], r[I_ID]) if r[I_ID] else r[I_RAW]  # film et série : ID distincts
+        occ.setdefault(k, []).append(r)
     return {k: v for k, v in occ.items() if len(v) > 1}
 
 
@@ -124,7 +195,7 @@ def write_md(path, rows, title, show_duplicates=False):
         for r in rows:
             o = [_md(c) for c in out_row(r)]
             if r[I_ID]:
-                o[O_ID] = f"[{r[I_ID]}]({TMDB_URL.format(r[I_ID])})"
+                o[O_ID] = f"[{r[I_ID]}]({row_url(r)})"
             elif o[O_TITLE]:
                 o[O_TITLE] = f"*{o[O_TITLE]}*"  # pas de titre TMDB : titre de la liste
             f.write("| " + " | ".join(o) + " |\n")
@@ -134,7 +205,8 @@ def write_md(path, rows, title, show_duplicates=False):
             for k, group in dups.items():
                 first = group[0]
                 name = first[I_TITLE] or first[I_RAW]
-                ref = f"ID {k}" if first[I_ID] else "non trouvé sur TMDB"
+                ref = (f"{first[I_TYPE].lower()} ID {first[I_ID]}" if first[I_ID]
+                       else "non trouvé sur TMDB")
                 nums = ", ".join(str(r[I_NUM]) for r in group)
                 f.write(f"- {name} ({ref}) : lignes {nums}\n")
 
@@ -176,10 +248,7 @@ def build_rows(list_path, cache, validations):
     for i, raw in enumerate(titles, 1):
         e = cache.get(raw)
         status = effective_status(raw, e, validations) if e else NOT_DONE
-        e = e or {}
-        rows.append([i, raw, e.get("title", ""), e.get("original_title", ""),
-                     e.get("date", ""), e.get("director", ""), e.get("country", ""),
-                     e.get("id", ""), status])
+        rows.append(entry_row(i, raw, e or {}, status))
     return rows
 
 

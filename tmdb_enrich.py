@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Enrichit une liste de films (un titre par ligne) avec les données TMDB :
-date de sortie, réalisateur(s), ID TMDB.
+date de sortie, réalisateur(s), pays, ID TMDB. Chaque titre est cherché parmi
+les films et parmi les séries télévisées (pour une série : date de première
+diffusion et créateur(s)).
 
 Usage :
     python3 tmdb_enrich.py liste_film.md
@@ -23,7 +25,8 @@ Sorties :
 Colonne "Statut" :
     OK         titre TMDB identique (titre FR ou original) au titre de la liste,
                ou titre « À VÉRIFIER » validé dans film_viewer.py (validations.json)
-    À VÉRIFIER correspondance approximative (premier résultat TMDB retenu)
+    À VÉRIFIER correspondance approximative (premier résultat TMDB retenu), ou
+               plusieurs films / séries portant exactement ce titre
     INTROUVABLE aucun résultat
 
 Aucune dépendance externe (stdlib uniquement).
@@ -174,38 +177,50 @@ def query_variants(raw):
     return uniq
 
 
-def candidate(r):
-    """Résumé d'un résultat de recherche TMDB, gardé dans le cache."""
-    return {"id": r["id"], "title": r.get("title", ""),
-            "original_title": r.get("original_title", ""),
-            "date": r.get("release_date", ""),
-            "overview": (r.get("overview") or "")[:400]}
+def candidate(r, media="movie"):
+    """Résumé d'un résultat de recherche TMDB (film ou série), gardé dans le cache."""
+    if media == "tv":
+        title, original, date = r.get("name", ""), r.get("original_name", ""), r.get("first_air_date", "")
+    else:
+        title, original, date = r.get("title", ""), r.get("original_title", ""), r.get("release_date", "")
+    return {"id": r["id"], "media": media, "title": title, "original_title": original,
+            "date": date or "", "overview": (r.get("overview") or "")[:400],
+            "popularity": r.get("popularity") or 0}
+
+
+def search_both(q, year=None):
+    """(films, séries) trouvés sur TMDB pour ce texte, au format candidate()."""
+    params = {"query": q, "language": LANG, "include_adult": "true"}
+    movie_params = dict(params, primary_release_year=year) if year else params
+    tv_params = dict(params, first_air_date_year=year) if year else params
+    movies = [candidate(r, "movie")
+              for r in api_get("/search/movie", **movie_params).get("results", [])]
+    shows = [candidate(r, "tv") for r in api_get("/search/tv", **tv_params).get("results", [])]
+    return movies, shows
 
 
 def search(raw):
-    """(film retenu, statut, homonymes).
+    """(film ou série retenu, statut, homonymes), au format candidate().
 
-    homonymes : liste de candidate() quand plusieurs films portent exactement
-    ce titre (ex. un film et son remake) ; le film retenu est alors le premier
-    et le statut « À VÉRIFIER », pour que l'utilisateur choisisse.
+    Le titre est cherché parmi les films et parmi les séries. homonymes :
+    quand plusieurs films ou séries portent exactement ce titre (ex. un film
+    et son remake, ou un film et une série) ; le premier (les films d'abord)
+    est retenu et le statut est « À VÉRIFIER », pour que l'utilisateur choisisse.
     """
     best = None
     for q, year in query_variants(raw):
-        params = {"query": q, "language": LANG, "include_adult": "true"}
-        if year:
-            params["primary_release_year"] = year
-        res = api_get("/search/movie", **params).get("results", [])
-        if not res:
+        movies, shows = search_both(q, year)
+        if not movies and not shows:
             continue
         nq = norm(q)
-        exact = [r for r in res[:10]
-                 if nq in (norm(r.get("title")), norm(r.get("original_title")))]
+        exact = [c for c in movies[:10] + shows[:10]
+                 if nq in (norm(c["title"]), norm(c["original_title"]))]
         if len(exact) > 1:
-            return exact[0], "À VÉRIFIER", [candidate(r) for r in exact]
+            return exact[0], "À VÉRIFIER", exact
         if exact:
             return exact[0], "OK", []
-        if best is None:
-            best = res[0]
+        if best is None:  # premier film trouvé, à défaut première série
+            best = (movies or shows)[0]
     return (best, "À VÉRIFIER", []) if best else (None, "INTROUVABLE", [])
 
 
@@ -225,119 +240,158 @@ def country_names():
     return _COUNTRY_NAMES
 
 
-def details(movie_id):
-    """(réalisateur(s), pays) d'un film, en une seule requête."""
-    d = api_get(f"/movie/{movie_id}", language=LANG, append_to_response="credits")
-    crew = (d.get("credits") or {}).get("crew", [])
-    directors = [c["name"] for c in crew if c.get("job") == "Director"]
+DOCUMENTARY_GENRE = 99  # genre « Documentaire » de TMDB (films et séries)
+
+
+def classify(media, genre_ids, keywords):
+    """Catégorie d'un film ou d'une série : concert, documentaire, film ou serie.
+
+    TMDB n'a pas de genre « concert » : un titre dont un mot-clé contient
+    « concert » (ex. « concert film ») est un concert ; sinon le genre
+    Documentaire en fait un documentaire.
+    """
+    if any("concert" in k.lower() for k in keywords):
+        return "concert"
+    if DOCUMENTARY_GENRE in genre_ids:
+        return "documentaire"
+    return "serie" if media == "tv" else "film"
+
+
+def details(movie_id, media="movie"):
+    """(réalisateur(s), pays, catégorie) d'un film, en une seule requête.
+
+    Pour une série : (créateur(s), pays d'origine, catégorie). Catégorie :
+    voir classify().
+    """
+    if media == "tv":
+        d = api_get(f"/tv/{movie_id}", language=LANG, append_to_response="keywords")
+        people = [c["name"] for c in d.get("created_by", [])]
+        keywords = (d.get("keywords") or {}).get("results", [])
+    else:
+        d = api_get(f"/movie/{movie_id}", language=LANG,
+                    append_to_response="credits,keywords")
+        crew = (d.get("credits") or {}).get("crew", [])
+        people = [c["name"] for c in crew if c.get("job") == "Director"]
+        keywords = (d.get("keywords") or {}).get("keywords", [])
     # Pays d'origine ; à défaut, pays de production.
-    codes = d.get("origin_country") or [c["iso_3166_1"] for c in d.get("production_countries", [])]
+    codes = d.get("origin_country") or [c["iso_3166_1"]
+                                        for c in d.get("production_countries", [])]
     names = country_names()
     countries = [names.get(c, c) for c in codes]
-    return ", ".join(dict.fromkeys(directors)), ", ".join(dict.fromkeys(countries))
+    kind = classify(media, [g.get("id") for g in d.get("genres", [])],
+                    [k.get("name", "") for k in keywords])
+    return ", ".join(dict.fromkeys(people)), ", ".join(dict.fromkeys(countries)), kind
 
 
 def complete(entry):
-    """Ajoute le pays à une entrée de cache qui date d'avant cette colonne."""
-    if not entry.get("id") or "country" in entry:
+    """Ajoute le pays et la catégorie à une entrée de cache plus ancienne."""
+    if not entry.get("id") or ("country" in entry and "kind" in entry):
         return False
-    director, country = details(entry["id"])
+    director, country, kind = details(entry["id"], tmdb_export.media_of(entry))
     entry["country"] = country
+    entry["kind"] = kind
     if not entry.get("director"):
         entry["director"] = director
     return True
 
 
 def movie_entry(c):
-    """Champs de cache d'un film (c au format candidate()), avec réalisateur et pays.
+    """Champs de cache d'un film ou d'une série (c au format candidate()),
+    avec réalisateur (créateur pour une série), pays et catégorie.
 
-    Si c contient déjà le réalisateur et le pays (homonymes), aucune requête.
+    Si c contient déjà ces informations (homonymes), aucune requête.
     """
-    if "director" in c and "country" in c:
-        director, country = c["director"], c["country"]
+    media = tmdb_export.media_of(c)
+    if "director" in c and "country" in c and "kind" in c:
+        director, country, kind = c["director"], c["country"], c["kind"]
     else:
-        director, country = details(c["id"])
-    return {"id": c["id"], "title": c.get("title", ""),
+        director, country, kind = details(c["id"], media)
+    return {"id": c["id"], "media": media, "kind": kind, "title": c.get("title", ""),
             "original_title": c.get("original_title", ""), "date": c.get("date", ""),
             "director": director, "country": country}
 
 
 def lookup(raw):
-    """Cherche un titre sur TMDB et retourne son entrée de cache.
+    """Cherche un titre sur TMDB (films et séries) et retourne son entrée de cache.
 
     S'il y a des homonymes, l'entrée garde la liste dans « candidates » (le
-    premier film est retenu en attendant le choix, voir choose()).
+    premier est retenu en attendant le choix, voir choose()).
     """
-    movie, status, candidates = search(raw)
+    found, status, candidates = search(raw)
     entry = {"status": status}
     if candidates:
-        # Réalisateur (et pays) de chaque homonyme, pour aider à choisir.
-        for c in candidates:
-            c["director"], c["country"] = details(c["id"])
+        add_details(candidates)  # réalisateur et pays de chacun, pour aider à choisir
         entry.update(movie_entry(candidates[0]))
         entry["candidates"] = candidates
-    elif movie:
-        entry.update(movie_entry(candidate(movie)))
+    elif found:
+        entry.update(movie_entry(found))
     return entry
 
 
 def search_candidates(query, limit=8):
-    """Films possibles pour un texte de recherche (format candidate()).
+    """Films et séries possibles pour un texte de recherche (format candidate()).
 
     Toutes les variantes du texte (voir query_variants) sont essayées, sans
-    doublon, jusqu'à `limit` films. Sans réalisateur ni pays : voir add_details.
+    doublon, jusqu'à `limit` résultats ; pour chaque variante, films et séries
+    sont mêlés par popularité. Sans réalisateur ni pays : voir add_details.
     """
     seen, cands = set(), []
     for q, year in query_variants(query):
-        params = {"query": q, "language": LANG, "include_adult": "true"}
-        if year:
-            params["primary_release_year"] = year
-        for r in api_get("/search/movie", **params).get("results", []):
-            if r["id"] not in seen:
-                seen.add(r["id"])
-                cands.append(candidate(r))
+        movies, shows = search_both(q, year)
+        for c in sorted(movies + shows, key=lambda c: -c["popularity"]):
+            if tmdb_export.key(c) not in seen:
+                seen.add(tmdb_export.key(c))
+                cands.append(c)
         if len(cands) >= limit:
             break
     return cands[:limit]
 
 
 def add_details(cands):
-    """Ajoute réalisateur et pays à chaque film possible (pour aider à choisir)."""
+    """Ajoute réalisateur (ou créateur), pays et catégorie à chaque résultat
+    (pour aider à choisir)."""
     for c in cands:
-        if "director" not in c:
-            c["director"], c["country"] = details(c["id"])
+        if "director" not in c or "kind" not in c:
+            c["director"], c["country"], c["kind"] = details(c["id"], tmdb_export.media_of(c))
     return cands
 
 
 def with_candidates(entry, raw, limit=8):
-    """Entrée « À VÉRIFIER » complétée par les films possibles pour ce titre.
+    """Entrée « À VÉRIFIER » complétée par les films et séries possibles.
 
     Utilisé par l'interface pour proposer un choix même quand le titre n'a
-    pas d'homonyme exact : jusqu'à `limit` résultats TMDB, le film
+    pas d'homonyme exact : jusqu'à `limit` résultats TMDB, celui
     actuellement retenu en premier.
     """
     cands = search_candidates(raw, limit)
-    current = entry.get("id")
-    if current:
-        found = next((c for c in cands if c["id"] == current), {})
-        cands = [c for c in cands if c["id"] != current]
-        cands.insert(0, {"id": current, "title": entry.get("title", ""),
+    if entry.get("id"):
+        current = tmdb_export.key(entry)
+        found = next((c for c in cands if tmdb_export.key(c) == current), {})
+        cands = [c for c in cands if tmdb_export.key(c) != current]
+        cands.insert(0, {"id": entry["id"], "media": tmdb_export.media_of(entry),
+                         "title": entry.get("title", ""),
                          "original_title": entry.get("original_title", ""),
                          "date": entry.get("date", ""), "overview": found.get("overview", ""),
                          "director": entry.get("director", ""),
-                         "country": entry.get("country", "")})
+                         "country": entry.get("country", ""),
+                         **({"kind": entry["kind"]} if "kind" in entry else {})})
     cands = cands[:limit]
     if len(cands) < 2:  # rien d'autre à proposer
         return entry
     return dict(entry, candidates=add_details(cands))
 
 
-def choose(entry, movie_id):
-    """Entrée de cache après le choix d'un des homonymes : statut OK."""
-    if movie_id == entry.get("id"):  # le film déjà retenu : rien à recharger
+def choose(entry, choice):
+    """Entrée de cache après le choix d'un des résultats : statut OK.
+
+    choice : clé « movie:123 » / « tv:123 » (voir tmdb_export.key) ; un
+    nombre seul désigne un film.
+    """
+    choice = "{}:{}".format(*tmdb_export.parse_key(choice))
+    if entry.get("id") and choice == tmdb_export.key(entry):  # déjà retenu : rien à recharger
         chosen = {k: v for k, v in entry.items() if k != "candidates"}
     else:
-        c = next(c for c in entry["candidates"] if c["id"] == movie_id)
+        c = next(c for c in entry["candidates"] if tmdb_export.key(c) == choice)
         chosen = movie_entry(c)
     chosen["status"] = "OK"
     return chosen
@@ -352,8 +406,10 @@ def found_label(e):
         label += f" ({e['date'][:4]})"
     if e.get("original_title") and norm(e["original_title"]) != norm(e.get("title")):
         label += f" [{e['original_title']}]"
+    if tmdb_export.kind_of(e) != "film":
+        label += f" [{tmdb_export.type_label(e).lower()}]"
     if e.get("candidates"):
-        label += f" — {len(e['candidates'])} films portent ce titre, à choisir dans l'interface"
+        label += f" — {len(e['candidates'])} films ou séries portent ce titre, à choisir dans l'interface"
     return label
 
 
@@ -383,8 +439,8 @@ def main():
             if raw not in cache:
                 cache[raw] = lookup(raw)
                 source = ""
-            elif complete(cache[raw]):  # cache d'avant la colonne « Pays »
-                source = " (pays ajouté)"
+            elif complete(cache[raw]):  # cache d'avant les colonnes « Pays » ou « Type »
+                source = " (complété)"
             else:
                 source = " (cache)"
             if source != " (cache)":
@@ -398,11 +454,7 @@ def main():
             print(f"[{i}/{len(titles)}] {status:12} {raw} → {found_label(e)}{source}",
                   file=sys.stderr)
             counts[status] = counts.get(status, 0) + 1
-            rows.append([
-                i, raw, e.get("title", ""), e.get("original_title", ""),
-                e.get("date", ""), e.get("director", ""), e.get("country", ""),
-                e.get("id", ""), status,
-            ])
+            rows.append(tmdb_export.entry_row(i, raw, e, status))
     finally:  # sauvegarde même en cas de plantage ou de Ctrl+C
         save_cache(cache)
 

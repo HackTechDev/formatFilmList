@@ -43,6 +43,9 @@ d'un coup ; les titres corrigés sont ensuite cherchés sur TMDB.
 Films « INTROUVABLE » : un clic sur « INTROUVABLE » ouvre la même fenêtre et
 y cherche le titre ; le texte de recherche se modifie (puis Entrée).
 
+Films et séries : chaque titre est cherché parmi les films et les séries
+(colonne « Type ») ; un film et une série de même titre sont des homonymes.
+
 Homonymes : quand plusieurs films portent exactement le titre cherché (ex.
 « Les Maîtres de l'univers » de 1987 et de 2026), une petite fenêtre propose
 de choisir le bon pendant la recherche (la synchronisation attend le choix).
@@ -85,7 +88,8 @@ STATUS_COLORS = {
 SEARCHING = "RECHERCHE…"
 SYNC_ROW_COLOR = QColor("#cfe2ff")  # fond bleu de la ligne en cours de synchronisation
 COLUMNS = ["#", "Statut", "Validé", "Titre (liste)", "Titre TMDB", "Titre original",
-           "Date de sortie", "Réalisateur", "Pays", "ID TMDB"]
+           "Type", "Date de sortie", "Réalisateur", "Pays", "ID TMDB"]
+COL_TYPE = COLUMNS.index("Type")
 COL_STATUS = COLUMNS.index("Statut")
 COL_CHECK = COLUMNS.index("Validé")
 COL_RAW = COLUMNS.index("Titre (liste)")
@@ -108,7 +112,8 @@ def film_row(i, raw, e, validations):
     validated = tmdb_export.is_validated(raw, e, validations) if checkable else None
     status = tmdb_export.effective_status(raw, e, validations) if e else NOT_DONE
     return [i, status, validated, raw, e.get("title", ""), e.get("original_title", ""),
-            e.get("date", ""), e.get("director", ""), e.get("country", ""), e.get("id", "")]
+            tmdb_export.type_label(e), e.get("date", ""), e.get("director", ""),
+            e.get("country", ""), e.get("id", "")]
 
 
 def rename_in_list(list_path, num, old, new):
@@ -197,7 +202,8 @@ class ChooseFilmDialog(QDialog):
 
     candidates : films proposés d'emblée (homonymes, films possibles). Vide
     (film INTROUVABLE) : la recherche du titre est lancée à l'ouverture.
-    Après exec() : choice = ID choisi (ou None), candidates = films affichés.
+    Après exec() : choice = clé du choix (« movie:123 », « tv:123 ») ou None,
+    candidates = films et séries affichés.
     """
 
     def __init__(self, raw, candidates, parent=None):
@@ -263,13 +269,17 @@ class ChooseFilmDialog(QDialog):
             # Titre (année) — réalisateur, puis le résumé sur une seule ligne.
             year = c.get("date", "")[:4] or "année inconnue"
             text = f"{c.get('title') or c.get('original_title')} ({year})"
+            kind = tmdb_export.kind_of(c)
+            if kind != "film":  # série, concert, documentaire
+                text += f" — {tmdb_export.KIND_LABELS[kind].lower()}"
             if c.get("director"):
-                text += f" — {c['director']}"
+                by = "créée par" if kind == "serie" else ("de" if kind != "film" else "—")
+                text += f" {by} {c['director']}"
             overview = " ".join((c.get("overview") or "").split())
             if overview:
                 text += "\n    " + fm.elidedText(overview, Qt.TextElideMode.ElideRight, 500)
             item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, c["id"])
+            item.setData(Qt.ItemDataRole.UserRole, tmdb_export.key(c))  # film et série : ID distincts
             item.setToolTip(overview or "Pas de résumé sur TMDB")
             self.list.addItem(item)
         if not candidates:
@@ -332,7 +342,8 @@ class ChooseFilmDialog(QDialog):
 
     def open_tmdb(self):
         if self.current_id():
-            QDesktopServices.openUrl(QUrl(tmdb_export.TMDB_URL.format(self.current_id())))
+            media, movie_id = tmdb_export.parse_key(self.current_id())
+            QDesktopServices.openUrl(QUrl(tmdb_export.tmdb_url(movie_id, media)))
 
     def pick(self):
         if self.current_id() is None:
@@ -992,10 +1003,9 @@ class FilmViewer(QMainWindow):
         """Coche « Validé » : enregistre la validation et met à jour le statut."""
         row = item.row()
         raw = self.model.item(row, COL_RAW).text()
-        movie_id = self.model.item(row, COL_ID).data(Qt.ItemDataRole.DisplayRole)
         validated = item.checkState() == Qt.CheckState.Checked
-        if validated:
-            self.validations[raw] = movie_id
+        if validated:  # ID pour un film, « tv:ID » pour une série
+            self.validations[raw] = tmdb_export.validation_value(self.cache[raw])
         else:
             self.validations.pop(raw, None)
         try:
@@ -1083,7 +1093,9 @@ class FilmViewer(QMainWindow):
             return  # double-clic sur un titre modifiable : correction, pas la fiche
         movie_id = self.model.item(src.row(), COL_ID).text()
         if movie_id:
-            QDesktopServices.openUrl(QUrl(f"https://www.themoviedb.org/movie/{movie_id}"))
+            raw = self.model.item(src.row(), COL_RAW).data(RAW_ROLE)
+            media = tmdb_export.media_of(self.cache.get(raw, {}))
+            QDesktopServices.openUrl(QUrl(tmdb_export.tmdb_url(movie_id, media)))
 
     def visible_rows(self):
         """Films affichés, dans l'ordre affiché, au format de tmdb_export."""
@@ -1092,6 +1104,9 @@ class FilmViewer(QMainWindow):
             src = self.proxy.mapToSource(self.proxy.index(r, 0)).row()
             film = dict(zip(COLUMNS, (self.model.item(src, c).data(Qt.ItemDataRole.DisplayRole)
                                       for c in range(len(COLUMNS)))))
+            entry = self.cache.get(self.model.item(src, COL_RAW).data(RAW_ROLE), {})
+            # Média (film ou série) : pas affiché, mais nécessaire au lien TMDB.
+            film["Média"] = tmdb_export.media_of(entry) if film["ID TMDB"] else ""
             rows.append([film[h] if film[h] is not None else "" for h in tmdb_export.HEADER])
         return rows
 
