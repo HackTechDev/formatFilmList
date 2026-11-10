@@ -205,15 +205,21 @@ python3 film_viewer.py test_films.md  # une autre liste
   titre original, année…) puis Entrée, et choisis le film : il passe en `OK`.
   Le titre de la liste n'est pas modifié (pour le corriger : double-clic sur
   le titre) ;
-- **correction des titres `À VÉRIFIER`, `INTROUVABLE` ou `NON TRAITÉ`** :
-  double-clic (ou F2) sur la cellule « Titre (liste) » pour corriger le
-  titre, puis Entrée (sur cette cellule, le double-clic n'ouvre pas la fiche
-  TMDB). La correction est écrite directement dans la liste
-  (`liste_film.md`) ; le film repasse (ou reste) `NON TRAITÉ` : un clic sur
-  `NON TRAITÉ` le cherche tout de suite, sinon il sera recherché au prochain
-  `./films.sh enrichir`. Si le nouveau titre est déjà dans le cache, son
-  statut s'affiche tout de suite. Un titre en cours de recherche
-  (`RECHERCHE…`) ne peut pas être modifié.
+- **correction des titres**, quel que soit le statut : double-clic (ou F2)
+  sur la cellule « Titre (liste) » pour corriger le titre, puis Entrée (sur
+  cette cellule, le double-clic n'ouvre pas la fiche TMDB). La correction est
+  écrite directement dans la liste (`liste_film.md`). Ensuite :
+  - un film `OK` (validé ou non) ou `À VÉRIFIER` **garde son film TMDB** et
+    passe (ou reste) `À VÉRIFIER`, puisque le titre a changé : un clic sur
+    `À VÉRIFIER` cherche les films possibles pour le nouveau titre, pour
+    confirmer ou choisir un autre film ; ou coche « Validé » ;
+  - un film `INTROUVABLE` ou `NON TRAITÉ` repasse (ou reste) `NON TRAITÉ` :
+    un clic sur `NON TRAITÉ` le cherche tout de suite, sinon il sera
+    recherché au prochain `./films.sh enrichir`.
+
+  Si le nouveau titre est déjà dans le cache, son statut s'affiche tout de
+  suite. Un titre en cours de recherche (`RECHERCHE…`) ne peut pas être
+  modifié.
 
 Les validations sont enregistrées dans `validations.json`, à côté de la liste
 (titre de la liste → ID TMDB validé). `tmdb_enrich.py` les reprend : les films

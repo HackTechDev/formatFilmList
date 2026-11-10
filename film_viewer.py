@@ -24,11 +24,13 @@ s'affiche comme un « OK » normal, sans case ; clic droit sur sa ligne →
 « Annuler la validation » pour revenir en arrière. Les validations sont enregistrées dans
 validations.json (à côté de la liste) et reprises par tmdb_enrich.py.
 
-Films « À VÉRIFIER », « INTROUVABLE » ou « NON TRAITÉ » : double-clic (ou F2)
-sur « Titre (liste) » pour corriger le titre (pas pendant sa recherche). La
-correction est écrite dans la liste ; le film repasse « NON TRAITÉ » et le
-nouveau titre sera cherché au prochain lancement de tmdb_enrich.py, ou tout
-de suite par un clic sur « NON TRAITÉ ».
+Titre d'un film : double-clic (ou F2) sur « Titre (liste) » pour le corriger,
+quel que soit son statut (pas pendant sa recherche). La correction est écrite
+dans la liste. Un film « OK » ou « À VÉRIFIER » garde son film TMDB et passe
+(ou reste) « À VÉRIFIER » ; les autres repassent « NON TRAITÉ » : le nouveau
+titre sera cherché au
+prochain lancement de tmdb_enrich.py, ou tout de suite par un clic sur
+« NON TRAITÉ ».
 
 Films « NON TRAITÉ » : un clic sur « NON TRAITÉ » cherche tout de suite ce
 titre sur TMDB (en arrière-plan) et enregistre le résultat dans le cache.
@@ -69,7 +71,7 @@ import tmdb_export
 CACHE_FILE = ".tmdb_cache.json"  # même nom que dans tmdb_enrich.py
 NOT_DONE = "NON TRAITÉ"
 STATUSES = ["OK", "À VÉRIFIER", "INTROUVABLE", NOT_DONE]
-EDITABLE = ("À VÉRIFIER", "INTROUVABLE", NOT_DONE)  # statuts dont le titre se corrige
+EDITABLE = ("OK", "À VÉRIFIER", "INTROUVABLE", NOT_DONE)  # statuts dont le titre se corrige
 STATUS_COLORS = {
     "OK": QColor("#2e9e44"),
     "À VÉRIFIER": QColor("#d98a00"),
@@ -455,8 +457,7 @@ class FilmViewer(QMainWindow):
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        # Seul le titre des films À VÉRIFIER, INTROUVABLE ou NON TRAITÉ est
-        # modifiable (voir fill_row et EDITABLE).
+        # Titre modifiable sauf pendant sa recherche (voir fill_row et EDITABLE).
         self.table.setEditTriggers(QTableView.EditTrigger.DoubleClicked
                                    | QTableView.EditTrigger.EditKeyPressed)
         self.table.setAlternatingRowColors(True)
@@ -806,7 +807,12 @@ class FilmViewer(QMainWindow):
             self.on_title_edited(item)
 
     def on_title_edited(self, item):
-        """Titre d'un film À VÉRIFIER, INTROUVABLE ou NON TRAITÉ corrigé : mise à jour de la liste."""
+        """Titre corrigé : mise à jour de la liste.
+
+        Un film OK ou À VÉRIFIER garde son film TMDB et passe (ou reste)
+        « À VÉRIFIER », puisque le titre a changé ; les autres repassent
+        « NON TRAITÉ ». Sauf si le nouveau titre est déjà dans le cache.
+        """
         r = item.row()
         old = item.data(RAW_ROLE)
         new = " ".join(item.text().split())
@@ -829,13 +835,31 @@ class FilmViewer(QMainWindow):
             QMessageBox.critical(self, "Erreur", f"Impossible de corriger le titre :\n{e}")
             self.reload()
             return
-        self.stamp = self.files_stamp()  # notre propre écriture : pas de rechargement
+        old_status = self.model.item(r, COL_STATUS).text()
         e = self.cache.get(new, {})
+        kept = False
+        if not e and old_status in ("OK", "À VÉRIFIER") and self.cache.get(old, {}).get("id"):
+            # Film déjà trouvé : on garde le film TMDB, à vérifier avec le
+            # nouveau titre. Les films possibles de l'ancien titre sont oubliés :
+            # un clic sur « À VÉRIFIER » cherchera ceux du nouveau titre.
+            e = {k: v for k, v in self.cache[old].items() if k != "candidates"}
+            e["status"] = "À VÉRIFIER"
+            try:
+                store_in_cache(self.cache_path, new, e)
+                self.cache[new] = e
+                kept = True
+            except OSError as err:
+                QMessageBox.critical(self, "Erreur", f"Impossible d'écrire le cache :\n{err}")
+                e = {}
+        self.stamp = self.files_stamp()  # nos propres écritures : pas de rechargement
         self.loading = True
         self.fill_row(r, film_row(num, new, e, self.validations))
         self.loading = False
         self.fill_status_combo(refilter=False)
-        if e:
+        if kept:
+            suite = ("film TMDB conservé, à vérifier : clic sur « À VÉRIFIER » pour "
+                     "confirmer ou choisir un autre film")
+        elif e:
             suite = f"déjà connu : {self.model.item(r, COL_STATUS).text()}"
         else:
             suite = ("clic sur « NON TRAITÉ » pour le chercher tout de suite, "
