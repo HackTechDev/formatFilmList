@@ -185,7 +185,7 @@ def candidate(r, media="movie"):
         title, original, date = r.get("title", ""), r.get("original_title", ""), r.get("release_date", "")
     return {"id": r["id"], "media": media, "title": title, "original_title": original,
             "date": date or "", "overview": (r.get("overview") or "")[:400],
-            "popularity": r.get("popularity") or 0}
+            "popularity": r.get("popularity") or 0, "genre_ids": r.get("genre_ids") or []}
 
 
 def search_both(q, year=None):
@@ -328,17 +328,21 @@ def lookup(raw):
     return entry
 
 
-def search_candidates(query, limit=8):
+def search_candidates(query, limit=8, documentaries=False):
     """Films et séries possibles pour un texte de recherche (format candidate()).
 
     Toutes les variantes du texte (voir query_variants) sont essayées, sans
     doublon, jusqu'à `limit` résultats ; pour chaque variante, films et séries
-    sont mêlés par popularité. Sans réalisateur ni pays : voir add_details.
+    sont mêlés par popularité. documentaries : seulement les résultats du
+    genre Documentaire (films et séries). Sans réalisateur ni pays : voir
+    add_details.
     """
     seen, cands = set(), []
     for q, year in query_variants(query):
         movies, shows = search_both(q, year)
         for c in sorted(movies + shows, key=lambda c: -c["popularity"]):
+            if documentaries and DOCUMENTARY_GENRE not in c["genre_ids"]:
+                continue
             if tmdb_export.key(c) not in seen:
                 seen.add(tmdb_export.key(c))
                 cands.append(c)

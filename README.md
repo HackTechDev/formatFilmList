@@ -162,6 +162,9 @@ python3 film_viewer.py test_films.md  # une autre liste
 
 - **Filtre par statut** (`OK`, `À VÉRIFIER`, `INTROUVABLE`, `NON TRAITÉ`),
   avec le nombre de films pour chacun ;
+- **Filtre par type** (`Film`, `Série télévisée`, `Concert`, `Documentaire`,
+  voir « Films et séries »), avec le nombre de films pour chacun ; il se
+  combine avec le filtre par statut et la recherche ;
 - **recherche** dans les titres et les réalisateurs ;
 - **tri** en cliquant sur l'en-tête d'une colonne ;
 - **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur ;
@@ -321,7 +324,10 @@ Quand plusieurs films portent exactement le titre cherché (par exemple
   Le champ de recherche en haut de la fenêtre permet de chercher un autre
   texte sur TMDB si le bon film n'est pas proposé : modifie-le puis **Entrée**
   (Entrée y lance la recherche et ne choisit rien ; → y déplace le curseur),
-  puis **↓** pour descendre dans les résultats.
+  puis **↓** pour descendre dans les résultats. La case **Documentaires
+  seulement** relance la recherche en ne gardant que les résultats du genre
+  Documentaire de TMDB (films et séries) : utile pour retrouver un
+  documentaire peu connu noyé parmi des films de même titre.
 
 - `./films.sh enrichir` ne peut pas poser la question : il retient le premier
   film en `À VÉRIFIER` et garde la liste des homonymes dans le cache.

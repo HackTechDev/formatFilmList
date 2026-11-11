@@ -186,13 +186,15 @@ class CandidatesThread(QThread):
     done = pyqtSignal(object)   # liste de films (format tmdb_enrich.candidate)
     failed = pyqtSignal(str)
 
-    def __init__(self, query):
+    def __init__(self, query, documentaries=False):
         super().__init__()
         self.query = query
+        self.documentaries = documentaries
 
     def run(self):
         try:
-            self.done.emit(tmdb_enrich.add_details(tmdb_enrich.search_candidates(self.query)))
+            found = tmdb_enrich.search_candidates(self.query, documentaries=self.documentaries)
+            self.done.emit(tmdb_enrich.add_details(found))
         except Exception as e:  # réseau, clé…
             self.failed.emit(f"{type(e).__name__} : {e}")
 
@@ -230,6 +232,11 @@ class ChooseFilmDialog(QDialog):
         search_row.addWidget(self.query, 1)
         search_row.addWidget(search_btn)
         layout.addLayout(search_row)
+        self.docs_only = QCheckBox("Documentaires seulement (films et séries)")
+        self.docs_only.setToolTip("Ne proposer que les résultats du genre Documentaire de TMDB")
+        self.docs_only.toggled.connect(self.run_search)  # relance la recherche
+        self.rerun = False
+        layout.addWidget(self.docs_only)
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(lambda _: self.pick())
         layout.addWidget(self.list)
@@ -310,10 +317,14 @@ class ChooseFilmDialog(QDialog):
 
     def run_search(self):
         query = " ".join(self.query.text().split())
-        if not query or self.thread:
+        if not query:
             return
-        self.fill_list([], f"Recherche de « {query} » sur TMDB…")
-        thread = CandidatesThread(query)
+        if self.thread:  # recherche en cours : relancée dès qu'elle se termine
+            self.rerun = True
+            return
+        what = "documentaires" if self.docs_only.isChecked() else "films et séries"
+        self.fill_list([], f"Recherche de « {query} » sur TMDB ({what})…")
+        thread = CandidatesThread(query, self.docs_only.isChecked())
         _search_threads.add(thread)  # gardé en vie même si la fenêtre se ferme
         thread.finished.connect(lambda: _search_threads.discard(thread))
         thread.done.connect(self.on_results)
@@ -323,16 +334,25 @@ class ChooseFilmDialog(QDialog):
 
     def on_results(self, candidates):
         self.thread = None
+        if self.rerun:  # case cochée / décochée pendant la recherche
+            self.rerun = False
+            self.run_search()
+            return
         if candidates:
             self.candidates = candidates
             self.fill_list(candidates)
             self.list.setFocus()
         else:
-            self.fill_list([], "Aucun film trouvé — modifie la recherche puis Entrée")
+            self.fill_list([], ("Aucun documentaire trouvé" if self.docs_only.isChecked()
+                                else "Aucun film trouvé") + " — modifie la recherche puis Entrée")
             self.query.setFocus()
 
     def on_failed(self, message):
         self.thread = None
+        if self.rerun:
+            self.rerun = False
+            self.run_search()
+            return
         self.fill_list([], f"Recherche impossible : {message}")
         self.query.setFocus()
 
@@ -533,15 +553,20 @@ class SyncThread(TmdbThread):
 
 
 class FilmFilter(QSortFilterProxyModel):
-    """Filtre par statut et par texte (titres et réalisateur)."""
+    """Filtre par statut, par type (film, série…) et par texte (titres et réalisateur)."""
 
     def __init__(self):
         super().__init__()
         self.status = None  # None = tous
+        self.kind = None    # None = tous ; sinon libellé de la colonne Type
         self.text = ""
 
     def set_status(self, status):
         self.status = status
+        self.invalidateFilter()
+
+    def set_kind(self, kind):
+        self.kind = kind
         self.invalidateFilter()
 
     def set_text(self, text):
@@ -551,6 +576,8 @@ class FilmFilter(QSortFilterProxyModel):
     def filterAcceptsRow(self, row, parent):
         m = self.sourceModel()
         if self.status and m.item(row, COL_STATUS).data(FILTER_ROLE) != self.status:
+            return False
+        if self.kind and m.item(row, COL_TYPE).text() != self.kind:
             return False
         if self.text:
             fields = (m.item(row, c).text() for c in COL_SEARCH)
@@ -589,6 +616,10 @@ class FilmViewer(QMainWindow):
 
         self.status_combo = QComboBox()
         self.status_combo.currentIndexChanged.connect(self.on_status_filter)
+        self.type_combo = QComboBox()
+        self.type_combo.setToolTip("Film, série télévisée, concert ou documentaire")
+        self.type_combo.currentIndexChanged.connect(
+            lambda: self.proxy.set_kind(self.type_combo.currentData()))
         self.search = QLineEdit()
         self.search.setPlaceholderText("Rechercher un titre, un réalisateur ou un pays…")
         self.search.setClearButtonEnabled(True)
@@ -621,6 +652,8 @@ class FilmViewer(QMainWindow):
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Statut :"))
         bar.addWidget(self.status_combo)
+        bar.addWidget(QLabel("Type :"))
+        bar.addWidget(self.type_combo)
         bar.addWidget(self.search, 1)
         bar.addWidget(reload_btn)
         bar.addWidget(self.sync_btn)
@@ -1079,8 +1112,25 @@ class FilmViewer(QMainWindow):
         idx = self.status_combo.findData(current)
         self.status_combo.setCurrentIndex(max(idx, 0))
         self.status_combo.blockSignals(False)
+        self.fill_type_combo()
         if refilter:
             self.proxy.set_status(self.status_combo.currentData())
+
+    def fill_type_combo(self):
+        """Liste « Type » : Tous, Film, Série télévisée, Concert, Documentaire."""
+        counts = {}
+        for r in range(self.model.rowCount()):
+            t = self.model.item(r, COL_TYPE).text()
+            counts[t] = counts.get(t, 0) + 1
+        current = self.type_combo.currentData()
+        self.type_combo.blockSignals(True)
+        self.type_combo.clear()
+        self.type_combo.addItem(f"Tous ({self.model.rowCount()})", None)
+        for label in tmdb_export.KIND_LABELS.values():
+            if counts.get(label) or label == current:
+                self.type_combo.addItem(f"{label} ({counts.get(label, 0)})", label)
+        self.type_combo.setCurrentIndex(max(self.type_combo.findData(current), 0))
+        self.type_combo.blockSignals(False)
 
     def update_count(self, *_):
         self.statusBar().showMessage(
