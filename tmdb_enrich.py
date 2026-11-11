@@ -257,12 +257,8 @@ def classify(media, genre_ids, keywords):
     return "serie" if media == "tv" else "film"
 
 
-def details(movie_id, media="movie"):
-    """(réalisateur(s), pays, catégorie) d'un film, en une seule requête.
-
-    Pour une série : (créateur(s), pays d'origine, catégorie). Catégorie :
-    voir classify().
-    """
+def _fetch(movie_id, media="movie"):
+    """Fiche TMDB d'un film ou d'une série : (fiche brute, personnes, pays, catégorie)."""
     if media == "tv":
         d = api_get(f"/tv/{movie_id}", language=LANG, append_to_response="keywords")
         people = [c["name"] for c in d.get("created_by", [])]
@@ -280,7 +276,57 @@ def details(movie_id, media="movie"):
     countries = [names.get(c, c) for c in codes]
     kind = classify(media, [g.get("id") for g in d.get("genres", [])],
                     [k.get("name", "") for k in keywords])
-    return ", ".join(dict.fromkeys(people)), ", ".join(dict.fromkeys(countries)), kind
+    return d, ", ".join(dict.fromkeys(people)), ", ".join(dict.fromkeys(countries)), kind
+
+
+def details(movie_id, media="movie"):
+    """(réalisateur(s), pays, catégorie) d'un film, en une seule requête.
+
+    Pour une série : (créateur(s), pays d'origine, catégorie). Catégorie :
+    voir classify().
+    """
+    return _fetch(movie_id, media)[1:]
+
+
+TMDB_REF_RE = re.compile(
+    r"themoviedb\.org/(?:[a-z]{2}(?:-[A-Z]{2})?/)?(movie|tv)/(\d+)"   # adresse d'une fiche
+    r"|^\s*(film|movie|s[ée]rie|tv)\s*[:/ ]\s*(\d+)\s*$"           # tv:1920, film 438631
+    r"|^\s*(\d+)\s*$",                                              # 438631
+    re.I)
+
+
+def parse_tmdb_ref(text, default_media="movie"):
+    """(média, ID) d'après un texte saisi : ID seul, « tv:1920 », « film:438631 »
+    ou adresse d'une fiche TMDB. None si le texte n'est pas reconnu."""
+    m = TMDB_REF_RE.search(text or "")
+    if not m:
+        return None
+    if m.group(1):
+        return m.group(1).lower(), int(m.group(2))
+    if m.group(3):
+        return ("tv" if m.group(3).lower() in ("tv", "série", "serie") else "movie"), int(m.group(4))
+    return default_media, int(m.group(5))
+
+
+def by_id(movie_id, media="movie"):
+    """Entrée de cache (statut OK) du film ou de la série portant cet ID TMDB.
+
+    Lève LookupError si TMDB n'a pas de film (ou de série) avec cet ID.
+    """
+    try:
+        d, people, countries, kind = _fetch(movie_id, media)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            what = "série" if media == "tv" else "film"
+            raise LookupError(f"aucun{'e' if media == 'tv' else ''} {what} n° {movie_id} sur TMDB")
+        raise
+    if media == "tv":
+        title, original, date = d.get("name", ""), d.get("original_name", ""), d.get("first_air_date", "")
+    else:
+        title, original, date = d.get("title", ""), d.get("original_title", ""), d.get("release_date", "")
+    return {"status": "OK", "id": movie_id, "media": media, "kind": kind,
+            "title": title, "original_title": original, "date": date or "",
+            "director": people, "country": countries}
 
 
 def complete(entry):
@@ -360,7 +406,7 @@ def add_details(cands):
     return cands
 
 
-def with_candidates(entry, raw, limit=8):
+def with_candidates(entry, raw, limit=8, minimum=2):
     """Entrée « À VÉRIFIER » complétée par les films et séries possibles.
 
     Utilisé par l'interface pour proposer un choix même quand le titre n'a
@@ -380,7 +426,7 @@ def with_candidates(entry, raw, limit=8):
                          "country": entry.get("country", ""),
                          **({"kind": entry["kind"]} if "kind" in entry else {})})
     cands = cands[:limit]
-    if len(cands) < 2:  # rien d'autre à proposer
+    if len(cands) < minimum:  # rien (d'autre) à proposer
         return entry
     return dict(entry, candidates=add_details(cands))
 

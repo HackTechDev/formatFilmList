@@ -167,7 +167,8 @@ python3 film_viewer.py test_films.md  # une autre liste
   combine avec le filtre par statut et la recherche ;
 - **recherche** dans les titres et les réalisateurs ;
 - **tri** en cliquant sur l'en-tête d'une colonne ;
-- **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur ;
+- **double-clic** sur une ligne : ouvre la fiche TMDB dans le navigateur
+  (sauf sur « Titre (liste) » et « ID TMDB », qui se corrigent) ;
 - **Exporter… → Films affichés…** : enregistre les films affichés (statut et
   recherche appliqués, dans l'ordre du tri) en Markdown ou en CSV ;
 - **Exporter… → Régénérer les fichiers de résultats** : voir ci-dessous ;
@@ -196,6 +197,11 @@ python3 film_viewer.py test_films.md  # une autre liste
   il est enregistré dans le cache comme si `./films.sh enrichir` l'avait
   trouvé. Nécessite la clé TMDB (`./films.sh config`). Pratique juste après
   avoir corrigé un titre `INTROUVABLE` ;
+- **corriger un film `OK`** : si le film retenu n'est pas le bon, un clic sur
+  son statut `OK` ouvre la même fenêtre de choix (voir ci-dessous), le film
+  actuel en premier, suivi des autres films et séries possibles, avec la
+  recherche libre. **Choisir** remplace le film (il reste `OK`) ; **Passer**
+  ne change rien ;
 - **choix du film `À VÉRIFIER`** : un clic sur un statut `À VÉRIFIER`
   (souligné) ouvre la fenêtre de choix du film (voir « Films homonymes ») avec
   les films possibles, celui retenu en premier. Si le titre a des homonymes
@@ -225,18 +231,31 @@ python3 film_viewer.py test_films.md  # une autre liste
 - **correction des titres**, quel que soit le statut : double-clic (ou F2)
   sur la cellule « Titre (liste) » pour corriger le titre, puis Entrée (sur
   cette cellule, le double-clic n'ouvre pas la fiche TMDB). La correction est
-  écrite directement dans la liste (`liste_film.md`). Ensuite :
-  - un film `OK` (validé ou non) ou `À VÉRIFIER` **garde son film TMDB** et
-    passe (ou reste) `À VÉRIFIER`, puisque le titre a changé : un clic sur
-    `À VÉRIFIER` cherche les films possibles pour le nouveau titre, pour
-    confirmer ou choisir un autre film ; ou coche « Validé » ;
-  - un film `INTROUVABLE` ou `NON TRAITÉ` repasse (ou reste) `NON TRAITÉ` :
-    un clic sur `NON TRAITÉ` le cherche tout de suite, sinon il sera
-    recherché au prochain `./films.sh enrichir`.
+  écrite directement dans la liste (`liste_film.md`), puis **les informations
+  du film se mettent à jour toutes seules** : le nouveau titre est cherché
+  aussitôt sur TMDB (statut `RECHERCHE…`) et la ligne affiche le résultat
+  (`OK`, `À VÉRIFIER`, `INTROUVABLE`, ou la fenêtre de choix s'il y a des
+  homonymes). Pour un film `OK` ou `À VÉRIFIER`, si la recherche ne trouve
+  rien (ou en cas d'erreur réseau), le film déjà trouvé est conservé et
+  passe `À VÉRIFIER`. Si le nouveau titre est déjà dans le cache, son statut
+  s'affiche tout de suite, sans recherche. Un titre en cours de recherche
+  (`RECHERCHE…`) ne peut pas être modifié.
+- **changer l'ID TMDB**, quel que soit le statut : double-clic (ou F2) sur
+  la cellule « ID TMDB », saisir le bon identifiant, puis Entrée. Les
+  informations du film (titre TMDB, titre original, type, date, réalisateur,
+  pays) sont rechargées depuis TMDB et la ligne passe `OK`. Formats acceptés :
 
-  Si le nouveau titre est déjà dans le cache, son statut s'affiche tout de
-  suite. Un titre en cours de recherche (`RECHERCHE…`) ne peut pas être
-  modifié.
+  | Saisie | Fiche chargée |
+  |---|---|
+  | `438631` | ID seul : même média que la ligne (film par défaut) |
+  | `film:438631` (ou `movie:`) | le film n° 438631 |
+  | `tv:1920` (ou `série:`) | la série n° 1920 |
+  | `https://www.themoviedb.org/tv/1920-twin-peaks` | adresse copiée depuis le site |
+
+  L'ID d'une série s'affiche `tv:1920` dans la cellule en cours de saisie. Un
+  film et une série peuvent avoir le même numéro : pour passer de l'un à
+  l'autre, préciser `film:` ou `tv:`. Un ID inconnu de TMDB affiche un
+  message et la ligne reste inchangée.
 
 Les validations sont enregistrées dans `validations.json`, à côté de la liste
 (titre de la liste → ID TMDB validé). `tmdb_enrich.py` les reprend : les films
